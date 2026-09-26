@@ -26,6 +26,8 @@ Both people need to be online at the same time: there is no server to hold messa
 - **Stays connected:** if the direct link drops (phone app in the background, network change), the chat
   reconnects automatically; only End chat closes it
 - **Replies** (hover the reply button, or swipe a message right on touch screens) and a **typing indicator**
+- **Delete messages** for yourself, or for everyone while connected (long-press on touch screens)
+- **Cancel** a photo or video while it's sending or receiving, from either side
 - **Photos and videos** up to 100 MB, sent in 16 KB chunks with backpressure and a progress bar
 - **Live connection panel:** network route, latency and encryption, read from WebRTC's own stats
 - **Safety number** to verify that nobody is intercepting the chat (MITM detection)

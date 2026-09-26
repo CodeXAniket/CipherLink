@@ -55,6 +55,10 @@ export function saveMessage(message) {
   return withStore(MESSAGES, 'readwrite', (store) => store.put(message));
 }
 
+export function deleteMessage(id) {
+  return withStore(MESSAGES, 'readwrite', (store) => store.delete(id));
+}
+
 export async function getConversation(owner, peer) {
   const messages = await withStore(MESSAGES, 'readonly', (store) => store.index('conversation').getAll([owner, peer]));
   return messages.sort((a, b) => a.time - b.time);

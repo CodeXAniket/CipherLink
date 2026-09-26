@@ -26,6 +26,8 @@ const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;
 const IDENTITY_KEY = 'cipherlink-identity';
 const REPLY_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 6 6v5" /></svg>';
+const DELETE_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" /></svg>';
+const LONG_PRESS_MS = 500;
 const NAME_WORDS = [
   ['calm', 'quiet', 'swift', 'bold', 'lucky', 'misty', 'sunny', 'brave', 'fuzzy', 'witty', 'mellow', 'rapid'],
   ['otter', 'heron', 'panda', 'falcon', 'lynx', 'koala', 'badger', 'gecko', 'raven', 'bison', 'mango', 'comet'],
@@ -45,6 +47,7 @@ const state = {
   // connecting -> connected, and connected <-> reconnecting if the direct link drops.
   chat: null,
   replyTo: null,        // { mid, from, preview } of the message being replied to
+  menuRecord: null,     // the message whose menu (reply / copy / delete) is open
   incoming: null,       // code whose chat request is waiting for my answer
   incomingTimer: null,
   viewing: null,        // code whose conversation is open in the main panel
@@ -53,6 +56,8 @@ const state = {
 
 // Object URLs for displayed photos/videos; released whenever the message list is rebuilt.
 const objectUrls = new Set();
+// Bubble element -> its saved message, for the long-press menu.
+const bubbleRecords = new WeakMap();
 
 // This browser's identity. A second tab gets its own temporary one (see 'code-in-use').
 let identity = loadIdentity() ?? { code: generateCode(), name: randomName() };
@@ -542,6 +547,10 @@ function onPeerMessage(chat, message) {
     startIncomingFile(chat, message);
   } else if (message.type === 'file-end') {
     finishIncomingFile(chat, message.id);
+  } else if (message.type === 'file-cancel') {
+    onPeerCancelledFile(chat, message.id);
+  } else if (message.type === 'delete') {
+    deleteFromPeer(chat.peer, message.mid);
   }
 }
 
@@ -667,6 +676,7 @@ async function drainOutgoing(chat) {
     try {
       await sendFile(chat, file);
     } catch (error) {
+      if (error.name === 'AbortError') continue; // cancelled by one of us: nothing to report
       console.error('Sending file failed:', error);
       toast(state.chat === chat
         ? `${file.name} couldn't be sent (${error.name}). Try again.`
@@ -691,16 +701,55 @@ async function sendFile(chat, file) {
     data = await file.arrayBuffer();
     if (!chat.connection.send({ type: 'file-start', id: transfer.id, ...transfer.file })) throw new Error('Channel closed');
     for (let offset = 0; offset < data.byteLength; offset += CHUNK_SIZE) {
+      // Cancel (by either side) stops the loop at the next chunk.
+      if (transfer.cancelled) throw new DOMException('Cancelled', 'AbortError');
       // Backpressure in sendBinary keeps the send queue small.
       await chat.connection.sendBinary(data.slice(offset, offset + CHUNK_SIZE));
       updateTransfer(transfer, Math.min(offset + CHUNK_SIZE, data.byteLength) / data.byteLength);
     }
+    if (transfer.cancelled) throw new DOMException('Cancelled', 'AbortError');
     if (!chat.connection.send({ type: 'file-end', id: transfer.id })) throw new Error('Channel closed');
   } catch (error) {
     failTransfer(transfer);
+    // Tell the receiver to throw away what it has, unless it was their cancel.
+    if (transfer.cancelled && !transfer.cancelledByPeer) chat.connection.send({ type: 'file-cancel', id: transfer.id });
     throw error;
   }
   await completeTransfer(transfer, new Blob([data], { type: file.type }));
+}
+
+// Cancel button on a photo/video in progress. Sending: the send loop stops and tells the
+// receiver. Receiving: drop what arrived and tell the sender to stop.
+function cancelTransfer(transfer) {
+  const chat = state.chat;
+  if (transfer.direction === 'Sending') {
+    transfer.cancelled = true;
+    return;
+  }
+  if (chat?.incomingFile?.transfer === transfer) {
+    chat.connection.send({ type: 'file-cancel', id: chat.incomingFile.remoteId });
+    chat.incomingFile = null; // chunks still on their way are ignored
+  }
+  failTransfer(transfer);
+}
+
+function onPeerCancelledFile(chat, id) {
+  const kind = (file) => mediaKind(file.mime).toLowerCase();
+  // They stopped sending us a file.
+  if (chat.incomingFile && chat.incomingFile.remoteId === id) {
+    const { transfer } = chat.incomingFile;
+    chat.incomingFile = null;
+    failTransfer(transfer);
+    toast(`${nameOf(chat.peer)} cancelled sending a ${kind(transfer.file)}.`);
+    return;
+  }
+  // They don't want a file we're sending them.
+  const transfer = state.transfers.get(id);
+  if (transfer?.direction === 'Sending' && transfer.peer === chat.peer) {
+    transfer.cancelled = true;
+    transfer.cancelledByPeer = true;
+    toast(`${nameOf(chat.peer)} cancelled your ${kind(transfer.file)}.`);
+  }
 }
 
 function startIncomingFile(chat, { id, name, mime, size }) {
@@ -1049,17 +1098,20 @@ function fillBubble(item, record) {
     const fill = el('span', 'progress-fill');
     fill.style.transform = `scaleX(${record.progress})`;
     bar.append(fill);
+    const footer = el('div', 'file-footer');
+    footer.append(el('span', 'progress-label', transferLabel(record)), button('Cancel', () => cancelTransfer(record), 'file-cancel'));
     item.replaceChildren(
       el('span', 'file-kind', mediaKind(record.file.mime)),
       el('strong', 'file-name', record.file.name),
       bar,
-      el('span', 'progress-label', transferLabel(record)),
+      footer,
     );
     return;
   }
 
-  // A saved message: optional reply quote, the content, and a reply button.
+  // A saved message: optional reply quote, the content, and the hover actions.
   item.dataset.mid = record.mid ?? record.id;
+  bubbleRecords.set(item, record);
   let content;
   if (record.file && !record.blob) {
     content = [el('p', null, `${mediaKind(record.file.mime)} unavailable: ${record.file.name}`), time];
@@ -1075,7 +1127,7 @@ function fillBubble(item, record) {
   } else {
     content = [el('p', null, record.text), time];
   }
-  item.replaceChildren(...(record.replyTo ? [replyQuote(record.replyTo)] : []), ...content, replyButton(record));
+  item.replaceChildren(...(record.replyTo ? [replyQuote(record.replyTo)] : []), ...content, messageActions(record));
 }
 
 function replyQuote(reply) {
@@ -1086,18 +1138,100 @@ function replyQuote(reply) {
   return quote;
 }
 
-// Shown on hover with a mouse; on touch screens, swiping the message right presses it.
-function replyButton(record) {
-  const reply = el('button', 'reply-btn');
-  reply.type = 'button';
-  reply.title = 'Reply';
-  reply.setAttribute('aria-label', 'Reply');
-  reply.innerHTML = REPLY_ICON; // fixed markup, no user data
-  reply.onclick = (event) => {
+// Reply and delete buttons beside a message, shown on hover with a mouse. On touch
+// screens they're hidden: swiping right replies and a long press opens the menu.
+function messageActions(record) {
+  const actions = el('div', 'msg-actions');
+  actions.append(
+    iconButton('Reply', REPLY_ICON, 'msg-btn reply-btn', () => startReply(record)),
+    iconButton('Delete', DELETE_ICON, 'msg-btn', () => openMessageMenu(record)),
+  );
+  return actions;
+}
+
+function iconButton(label, icon, className, onClick) {
+  const node = el('button', className);
+  node.type = 'button';
+  node.title = label;
+  node.setAttribute('aria-label', label);
+  node.innerHTML = icon; // fixed markup, no user data
+  node.onclick = (event) => {
     event.stopPropagation();
-    startReply(record);
+    onClick();
   };
-  return reply;
+  return node;
+}
+
+// ---------- Message menu and deleting ----------
+
+// Menu for one message: reply, copy, delete for me, delete for everyone.
+function openMessageMenu(record) {
+  state.menuRecord = record;
+  const mine = record.from === state.me.code;
+  const connected = state.chat?.status === 'connected' && state.chat.peer === record.peer;
+  $('message-menu-preview').textContent = previewOf(record);
+  $('msg-copy').hidden = !record.text;
+  // Only your own messages, and only while connected: nothing can carry the request later.
+  $('msg-delete-all').hidden = !mine;
+  $('msg-delete-all').disabled = !connected;
+  $('msg-delete-all').textContent = connected ? 'Delete for everyone' : 'Delete for everyone (connect first)';
+  $('message-menu').showModal();
+}
+
+function closeMessageMenu() {
+  state.menuRecord = null;
+  $('message-menu').close();
+}
+
+async function deleteMessage(record, { everyone = false } = {}) {
+  const mid = record.mid ?? record.id;
+  if (everyone) {
+    const chat = state.chat;
+    const sent = chat?.status === 'connected' && chat.peer === record.peer && chat.connection.send({ type: 'delete', mid });
+    if (!sent) {
+      toast("Couldn't delete for everyone: you're not connected.");
+      return;
+    }
+    await scrubQuotes(record.peer, mid);
+  }
+  await storage.deleteMessage(record.id);
+  await refreshAfterDelete(record.peer);
+}
+
+// The other side deleted one of their own messages for everyone.
+async function deleteFromPeer(peer, mid) {
+  if (typeof mid !== 'string') return;
+  const messages = await storage.getConversation(state.me.code, peer);
+  const target = messages.find((message) => message.mid === mid && message.from === peer);
+  if (!target) return;
+  await storage.deleteMessage(target.id);
+  await scrubQuotes(peer, mid);
+  await refreshAfterDelete(peer);
+}
+
+// Replies that quoted a message deleted for everyone shouldn't keep its text.
+async function scrubQuotes(peer, mid) {
+  const messages = await storage.getConversation(state.me.code, peer);
+  for (const message of messages) {
+    if (message.replyTo?.mid === mid) {
+      await storage.saveMessage({ ...message, replyTo: { ...message.replyTo, preview: 'Deleted message' } });
+    }
+  }
+}
+
+async function refreshAfterDelete(peer) {
+  await loadContacts();
+  renderContacts();
+  if (state.viewing === peer) loadMessages();
+}
+
+async function copyMessage(record) {
+  try {
+    await navigator.clipboard.writeText(record.text);
+    toast('Copied.');
+  } catch {
+    toast("Copy isn't available here.");
+  }
 }
 
 // Media is only ever shown through <img> and <video>, never opened as a page, so a
@@ -1352,18 +1486,26 @@ $('reply-cancel').onclick = () => {
   $('message-input').focus();
 };
 
-// Swipe a message to the right to reply (touch screens). Vertical movement means the
-// person is scrolling, so the swipe is dropped.
+// Touch screens: swipe a message right to reply, or hold it to open the message menu.
+// Vertical movement means the person is scrolling, so both are dropped.
 let swipe = null;
 $('messages').addEventListener('touchstart', (event) => {
   const bubble = event.target.closest('.bubble[data-mid]');
   if (!bubble || event.touches.length !== 1 || event.target.closest('video, a, .reply-quote')) return;
   swipe = { bubble, x: event.touches[0].clientX, y: event.touches[0].clientY, dx: 0, active: false };
+  swipe.pressTimer = setTimeout(() => {
+    if (!swipe || swipe.active) return;
+    const record = bubbleRecords.get(swipe.bubble);
+    swipe = null;
+    navigator.vibrate?.(15);
+    if (record) openMessageMenu(record);
+  }, LONG_PRESS_MS);
 }, { passive: true });
 $('messages').addEventListener('touchmove', (event) => {
   if (!swipe) return;
   const dx = event.touches[0].clientX - swipe.x;
   const dy = event.touches[0].clientY - swipe.y;
+  if (Math.abs(dx) > 10 || Math.abs(dy) > 10) clearTimeout(swipe.pressTimer); // moved: not a long press
   if (!swipe.active) {
     if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
       swipe = null;
@@ -1377,6 +1519,7 @@ $('messages').addEventListener('touchmove', (event) => {
 }, { passive: true });
 function endSwipe(allowReply) {
   if (!swipe) return;
+  clearTimeout(swipe.pressTimer);
   const { bubble, dx, active } = swipe;
   swipe = null;
   if (!active) return;
@@ -1387,6 +1530,40 @@ function endSwipe(allowReply) {
 }
 $('messages').addEventListener('touchend', () => endSwipe(true));
 $('messages').addEventListener('touchcancel', () => endSwipe(false));
+
+// Right-click (or the browser's own long-press menu) on a message opens our menu instead.
+$('messages').addEventListener('contextmenu', (event) => {
+  const bubble = event.target.closest('.bubble[data-mid]');
+  const record = bubble && bubbleRecords.get(bubble);
+  if (!record || event.target.closest('video, img, a')) return;
+  event.preventDefault();
+  if (!$('message-menu').open) openMessageMenu(record);
+});
+
+$('msg-reply').onclick = () => {
+  const record = state.menuRecord;
+  closeMessageMenu();
+  startReply(record);
+};
+$('msg-copy').onclick = () => {
+  const record = state.menuRecord;
+  closeMessageMenu();
+  copyMessage(record);
+};
+$('msg-delete-me').onclick = () => {
+  const record = state.menuRecord;
+  closeMessageMenu();
+  deleteMessage(record);
+};
+$('msg-delete-all').onclick = () => {
+  const record = state.menuRecord;
+  closeMessageMenu();
+  deleteMessage(record, { everyone: true });
+};
+$('msg-close').onclick = closeMessageMenu;
+$('message-menu').addEventListener('click', (event) => {
+  if (event.target.id === 'message-menu') closeMessageMenu(); // click outside the menu
+});
 
 // Phones pause pages in the background. When the app comes back to the front, reconnect
 // right away instead of waiting for the next retry.
