@@ -18,8 +18,6 @@
 
   --font-display: "Anton", "Arial Narrow", Impact, sans-serif;
   --font-sans: "Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  /* Technical voice: labels, timestamps, connection stats, safety number. */
-  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-shutter: cubic-bezier(0.76, 0, 0.24, 1);
 
@@ -176,8 +174,8 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
   right: 0;
   top: calc(50% + 48px);
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-display);
+  font-size: 15px;
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -281,15 +279,15 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .login-form { display: grid; gap: 8px; }
 .login-form label, .step-tag, .sidebar-note, .link-label, .day-divider,
 .notice-title, .my-code-label, .add-form label {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-display);
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .field-row { display: flex; gap: 8px; }
 .field-row input:focus { box-shadow: inset 0 0 0 2px var(--ink), 0 0 0 3px var(--canvas); }
-.helper { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--stone); }
+.helper { margin: 0; font-family: var(--font-display); font-size: 14px; color: var(--stone); }
 .helper-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .btn-link-dark { color: var(--canvas); text-decoration: underline; text-underline-offset: 3px; padding-inline: 0; }
 .btn-link-dark:hover:not(:disabled) { color: var(--hairline); }
@@ -306,7 +304,7 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 }
 .notice p { margin: 0; }
 .notice-title { color: var(--canvas); }
-.notice-code { font-family: var(--font-mono); font-size: 12px; color: var(--stone); }
+.notice-code { font-family: var(--font-display); font-size: 14px; color: var(--stone); }
 .notice-code strong { margin-left: 6px; color: var(--canvas); font-weight: 500; letter-spacing: 0.06em; }
 .error { margin: 0; min-height: 21px; font-size: 14px; color: var(--error); }
 .campaign .error { color: var(--error-on-dark); }
@@ -351,14 +349,14 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .sidebar { overflow-y: auto; padding: 24px 0; box-shadow: inset -1px 0 0 var(--hairline-soft); }
 /* Your friend code: a black card at the top of the sidebar. */
 .my-code { display: grid; gap: 8px; margin: 0 16px 16px; padding: 18px 20px; background: var(--ink); color: var(--canvas); }
-.my-code-label { color: var(--stone); font-size: 11px; }
+.my-code-label { color: var(--stone); font-size: 13px; }
 .my-code-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.my-code-value { font-family: var(--font-mono); font-size: 26px; font-weight: 500; letter-spacing: 0.06em; line-height: 1.1; }
+.my-code-value { font-family: var(--font-display); font-size: 26px; font-weight: 500; letter-spacing: 0.06em; line-height: 1.1; }
 .my-code-hint { margin: 0; font-size: 13px; color: var(--stone); }
 
 .add-form { display: grid; gap: 8px; margin: 0 16px 20px; }
-.add-form label { color: var(--mute); font-size: 11px; padding-left: 4px; }
-.add-form input { height: 40px; font-family: var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.add-form label { color: var(--mute); font-size: 13px; padding-left: 4px; }
+.add-form input { height: 40px; font-family: var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; }
 .add-form input::placeholder { letter-spacing: 0.08em; }
 .add-form .error { min-height: 0; padding-left: 4px; }
 .add-form .error:empty { display: none; }
@@ -379,17 +377,17 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
   display: inline-grid;
   place-items: center;
   min-width: 24px;
-  height: 20px;
+  height: 22px;
   padding: 0 7px;
-  border-radius: 10px;
+  border-radius: 11px;
   background: var(--ink);
   color: var(--canvas);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: 13px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
-.sidebar-note { margin: -6px 24px 12px; color: var(--mute); font-size: 11px; }
+.sidebar-note { margin: -6px 24px 12px; color: var(--mute); font-size: 13px; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .list-empty { padding: 8px 24px; font-size: 14px; color: var(--mute); }
@@ -471,13 +469,13 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .chat-title { flex: 1; min-width: 140px; display: grid; gap: 2px; }
 .chat-name-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .chat-title strong { font-weight: 600; font-size: 18px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-code { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--mute); white-space: nowrap; }
+.chat-code { font-family: var(--font-display); font-size: 14px; letter-spacing: 0.06em; color: var(--mute); white-space: nowrap; }
 #chat-status {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -505,8 +503,8 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 }
 .link-cell { display: grid; gap: 2px; min-width: 0; padding: 10px 24px 11px; }
 .link-cell + .link-cell { box-shadow: inset 1px 0 0 rgb(255 255 255 / 0.14); }
-.link-label { color: var(--stone); font-size: 10px; }
-.link-value { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-label { color: var(--stone); font-size: 12px; }
+.link-value { font-family: var(--font-display); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The action group stays on one line; the header wraps it below the name when space runs out. */
 .chat-actions { display: flex; align-items: center; gap: 10px; }
 
@@ -593,13 +591,13 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .chat-empty strong { font-family: var(--font-display); font-weight: 400; font-size: 44px; line-height: 0.95; text-transform: uppercase; }
 .chat-empty span { font-size: 14px; color: var(--mute); }
 
-.day-divider { display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; color: var(--mute); font-size: 11px; }
+.day-divider { display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; color: var(--mute); font-size: 13px; }
 .day-divider::before, .day-divider::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
 .day-divider:first-child { margin-top: 0; }
 
 .bubble { max-width: min(70%, 520px); padding: 10px 16px 8px; border-radius: var(--radius-bubble); }
 .bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.bubble time { display: block; margin-top: 3px; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55; text-align: right; }
+.bubble time { display: block; margin-top: 3px; font-family: var(--font-display); font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.55; text-align: right; }
 .bubble.mine { align-self: flex-end; background: var(--ink); color: var(--canvas); border-bottom-right-radius: 6px; transform-origin: bottom right; }
 .bubble.theirs { align-self: flex-start; background: var(--canvas); border-bottom-left-radius: 6px; transform-origin: bottom left; }
 /* Grouped messages: tight spacing, the "tail" corner only on the last one, time only on the last one. */
@@ -613,11 +611,11 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 
 /* Photo/video being sent or received. */
 .file-bubble { display: grid; gap: 6px; min-width: min(260px, 70vw); padding: 14px 16px 12px; }
-.file-kind { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.6; }
+.file-kind { font-family: var(--font-display); font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.6; }
 .file-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress { display: block; height: 4px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, currentColor 22%, transparent); }
 .progress-fill { display: block; height: 100%; background: currentColor; transform: scaleX(0); transform-origin: left; transition: transform 0.2s linear; }
-.progress-label { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.7; }
+.progress-label { font-family: var(--font-display); font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.7; }
 
 /* Finished photo/video. */
 .media-bubble { padding: 4px; }
@@ -634,8 +632,8 @@ img.media { cursor: zoom-in; }
   align-items: center;
   gap: 10px;
   padding: 6px 10px 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 .media-meta span { opacity: 0.6; }
@@ -661,8 +659,8 @@ img.media { cursor: zoom-in; }
   justify-content: space-between;
   gap: 16px;
   padding: 0 20px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-display);
+  font-size: 13px;
   color: var(--mute);
 }
 #composer-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -682,13 +680,13 @@ img.media { cursor: zoom-in; }
 .dialog::backdrop { background: rgb(17 17 17 / 0.55); animation: fade 0.3s var(--ease-out); }
 .dialog h3 { font-family: var(--font-display); font-weight: 400; font-size: 36px; line-height: 0.95; text-transform: uppercase; margin-bottom: 14px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
-.request-code { display: inline-block; margin: 0 0 4px; padding: 6px 12px; background: var(--soft-cloud); font-family: var(--font-mono); font-size: 12px; color: var(--mute); }
+.request-code { display: inline-block; margin: 0 0 4px; padding: 6px 14px; background: var(--soft-cloud); font-family: var(--font-display); font-size: 12px; color: var(--mute); }
 .request-code strong { margin-left: 6px; color: var(--ink); font-weight: 500; letter-spacing: 0.06em; }
 
 .safety-number {
   padding: 20px;
   background: var(--soft-cloud);
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-size: 24px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -732,7 +730,7 @@ img.media { cursor: zoom-in; }
   .chat-code { display: none; }
   .action-group { order: 1; flex: 1 1 100%; }
   .btn.seg { flex: 1; padding: 0 8px; }
-  .link-value { font-size: 12px; }
+  .link-value { font-size: 14px; }
   .app { grid-template-columns: 1fr; }
   .chat-panel { display: none; }
   body.show-chat .sidebar { display: none; }
