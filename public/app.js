@@ -1033,10 +1033,16 @@ $('login-form').addEventListener('submit', (event) => {
   connect();
 });
 
+// Icon toggle buttons: aria-pressed picks which icon shows (see .icon-on / .icon-off in CSS).
+function setToggle(button, on, label) {
+  button.setAttribute('aria-pressed', String(on));
+  button.setAttribute('aria-label', label);
+  button.title = label;
+}
+
 function renderSoundButton() {
   const on = sounds.isEnabled();
-  $('sound-btn').textContent = on ? 'Sound on' : 'Sound off';
-  $('sound-btn').setAttribute('aria-pressed', String(on));
+  setToggle($('sound-btn'), on, on ? 'Sound on' : 'Sound off');
 }
 renderSoundButton();
 $('sound-btn').onclick = () => {
@@ -1045,6 +1051,20 @@ $('sound-btn').onclick = () => {
   sounds.sent(); // a quick preview when turning it on (silent when turning it off)
   renderSoundButton();
 };
+
+// Full screen hides the browser's address bar and tabs. Not every browser allows it
+// (iPhone Safari doesn't), so the button only shows where it works.
+function renderFullscreenButton() {
+  const on = Boolean(document.fullscreenElement);
+  setToggle($('fullscreen-btn'), on, on ? 'Exit full screen' : 'Full screen');
+}
+$('fullscreen-btn').hidden = !document.fullscreenEnabled;
+renderFullscreenButton();
+$('fullscreen-btn').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => toast("Full screen isn't available here."));
+};
+document.addEventListener('fullscreenchange', renderFullscreenButton);
 
 // Format as XXXX-XXXX while typing.
 $('add-code').addEventListener('input', (event) => {
