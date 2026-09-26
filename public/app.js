@@ -485,7 +485,7 @@ async function drainOutgoing(chat) {
     } catch (error) {
       console.error('Sending file failed:', error);
       toast(state.chat === chat
-        ? `${file.name} couldn't be sent. Try again.`
+        ? `${file.name} couldn't be sent (${error.name}). Try again.`
         : `${file.name} wasn't sent: the connection dropped.`);
     }
   }
@@ -499,25 +499,24 @@ async function sendFile(chat, file) {
     file: { name: file.name, mime: file.type, size: file.size },
     direction: 'Sending',
   });
-  const chunks = [];
+  let data;
   try {
+    // Read the whole file once, before sending. Phones can fail to read a large gallery
+    // file slice by slice during a long transfer, and this in-memory copy is also what we
+    // keep afterwards (storing the picked File itself fails on some phones).
+    data = await file.arrayBuffer();
     if (!chat.connection.send({ type: 'file-start', id: transfer.id, ...transfer.file })) throw new Error('Channel closed');
-    for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-      // Read one slice at a time; backpressure in sendBinary keeps the send queue small.
-      const chunk = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer();
-      chunks.push(chunk);
-      await chat.connection.sendBinary(chunk);
-      updateTransfer(transfer, Math.min(offset + CHUNK_SIZE, file.size) / file.size);
+    for (let offset = 0; offset < data.byteLength; offset += CHUNK_SIZE) {
+      // Backpressure in sendBinary keeps the send queue small.
+      await chat.connection.sendBinary(data.slice(offset, offset + CHUNK_SIZE));
+      updateTransfer(transfer, Math.min(offset + CHUNK_SIZE, data.byteLength) / data.byteLength);
     }
     if (!chat.connection.send({ type: 'file-end', id: transfer.id })) throw new Error('Channel closed');
   } catch (error) {
     failTransfer(transfer);
     throw error;
   }
-  // Keep a copy built from the chunks already read, like the receiver does. Storing the
-  // picked File itself fails on some phones (Chrome can't always copy gallery files
-  // into IndexedDB).
-  await completeTransfer(transfer, new Blob(chunks, { type: file.type }));
+  await completeTransfer(transfer, new Blob([data], { type: file.type }));
 }
 
 function startIncomingFile(chat, { id, name, mime, size }) {

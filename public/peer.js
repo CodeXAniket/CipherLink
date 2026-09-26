@@ -4,9 +4,11 @@
 // Text and control messages are JSON strings; file chunks are raw binary (ArrayBuffer).
 
 // Backpressure limits for file chunks: pause sending when more than BUFFER_HIGH bytes are
-// queued, resume once the queue drains below BUFFER_LOW.
-const BUFFER_HIGH = 1024 * 1024;
-const BUFFER_LOW = 256 * 1024;
+// queued, resume once the queue drains below BUFFER_LOW. Kept small for phone browsers.
+const BUFFER_HIGH = 256 * 1024;
+const BUFFER_LOW = 64 * 1024;
+const SEND_RETRIES = 30;
+const RETRY_DELAY_MS = 100;
 
 export function createPeer({ initiator, iceServers, sendSignal, onOpen, onMessage, onBinary, onClose }) {
   const pc = new RTCPeerConnection({ iceServers });
@@ -85,23 +87,38 @@ export function createPeer({ initiator, iceServers, sendSignal, onOpen, onMessag
   // Sends one file chunk. If the channel's send queue is full, waits for it to drain
   // first, so a large video is streamed instead of piled into memory all at once.
   async function sendBinary(data) {
-    if (channel?.readyState !== 'open') throw new Error('Channel closed');
-    if (channel.bufferedAmount > BUFFER_HIGH) await waitForDrain();
-    channel.send(data);
+    for (let attempt = 0; ; attempt++) {
+      if (channel?.readyState !== 'open') throw new Error('Channel closed');
+      if (channel.bufferedAmount > BUFFER_HIGH) await waitForDrain();
+      try {
+        channel.send(data);
+        return;
+      } catch (error) {
+        // Phone browsers can report a full send queue ("OperationError") earlier than
+        // desktop ones. Give the queue a moment to empty, then send the same chunk again.
+        if (error.name !== 'OperationError' || attempt >= SEND_RETRIES) throw error;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
   }
 
   function waitForDrain() {
     return new Promise((resolve, reject) => {
-      const drained = () => {
-        channel.removeEventListener('close', closedEarly);
-        resolve();
+      const finish = (error) => {
+        clearInterval(backupCheck);
+        channel.removeEventListener('bufferedamountlow', onLow);
+        channel.removeEventListener('close', onClose);
+        if (error) reject(error);
+        else resolve();
       };
-      const closedEarly = () => {
-        channel.removeEventListener('bufferedamountlow', drained);
-        reject(new Error('Channel closed'));
-      };
-      channel.addEventListener('bufferedamountlow', drained, { once: true });
-      channel.addEventListener('close', closedEarly, { once: true });
+      const onLow = () => finish();
+      const onClose = () => finish(new Error('Channel closed'));
+      // Backup in case a browser doesn't fire "bufferedamountlow" reliably.
+      const backupCheck = setInterval(() => {
+        if (channel.bufferedAmount <= BUFFER_LOW) finish();
+      }, 200);
+      channel.addEventListener('bufferedamountlow', onLow);
+      channel.addEventListener('close', onClose);
     });
   }
 
