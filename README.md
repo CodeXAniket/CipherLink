@@ -23,6 +23,9 @@ Both people need to be online at the same time: there is no server to hold messa
 - **Chat requests:** the other person accepts or declines; accepting saves you in each other's contacts
 - **Contacts with live status:** the server only reports the online status of codes you already know
 - Direct peer-to-peer text chat (WebRTC DataChannel, encrypted with DTLS)
+- **Stays connected:** if the direct link drops (phone app in the background, network change), the chat
+  reconnects automatically; only End chat closes it
+- **Replies** (hover the reply button, or swipe a message right on touch screens) and a **typing indicator**
 - **Photos and videos** up to 100 MB, sent in 16 KB chunks with backpressure and a progress bar
 - **Live connection panel:** network route, latency and encryption, read from WebRTC's own stats
 - **Safety number** to verify that nobody is intercepting the chat (MITM detection)

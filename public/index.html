@@ -186,6 +186,13 @@
           </div>
 
           <form id="composer" class="composer">
+            <div id="reply-bar" class="reply-bar" hidden>
+              <div class="reply-bar-text">
+                <span>Replying to <strong id="reply-name"></strong></span>
+                <span id="reply-preview" class="reply-preview"></span>
+              </div>
+              <button id="reply-cancel" class="btn btn-icon-small" type="button" aria-label="Cancel reply" title="Cancel reply">×</button>
+            </div>
             <div class="composer-row">
               <button id="attach-btn" class="btn btn-icon" type="button" aria-label="Send a photo or video" title="Photo or video">+</button>
               <input id="file-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif,video/mp4,video/webm,video/quicktime,video/ogg" multiple hidden>
@@ -193,7 +200,6 @@
               <button id="send-btn" class="btn btn-primary" type="submit">Send</button>
             </div>
             <div class="composer-meta">
-              <span id="composer-note"></span>
               <span id="char-count">0 / 2000</span>
             </div>
           </form>

@@ -451,9 +451,10 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
   padding: 12px 24px;
   box-shadow: inset 0 -1px 0 var(--hairline-soft);
 }
-/* Scanning bar while waiting for a reply or connecting. */
+/* Scanning bar while waiting for a reply, connecting or reconnecting. */
 .conversation[data-status="requesting"] .chat-header::after,
-.conversation[data-status="connecting"] .chat-header::after {
+.conversation[data-status="connecting"] .chat-header::after,
+.conversation[data-status="reconnecting"] .chat-header::after {
   content: "";
   position: absolute;
   left: 0;
@@ -609,6 +610,67 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .bubble.has-next time { display: none; }
 .bubble.is-new { animation: bubble-in 0.35s var(--ease-out) both; }
 
+/* Quote of the message being replied to; tap it to jump to the original. */
+.bubble { position: relative; }
+.reply-quote {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  box-shadow: inset 3px 0 0 currentColor;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.reply-quote strong { font-size: 12px; font-weight: 600; }
+.reply-quote span { min-width: 0; font-size: 13px; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-bubble .reply-quote { width: auto; margin: 4px 4px 6px; }
+
+/* Reply button beside a message, shown on hover. Touch screens swipe instead. */
+.reply-btn {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-top: -16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgb(17 17 17 / 0.14);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s 0.1s;
+}
+.reply-btn .icon { width: 16px; height: 16px; }
+.bubble.mine .reply-btn { left: -40px; }
+.bubble.theirs .reply-btn { right: -40px; }
+.bubble:hover .reply-btn, .reply-btn:focus-visible { opacity: 1; transition-delay: 0s; }
+@media (hover: none) { .reply-btn { display: none; } }
+
+/* Briefly outline a message after jumping to it from a reply quote. */
+.bubble.flash { animation: flash 1.4s var(--ease-out); }
+@keyframes flash { 0%, 45% { box-shadow: 0 0 0 4px var(--stone); } 100% { box-shadow: 0 0 0 4px transparent; } }
+
+/* "Typing" with dots that fill in one by one. */
+.peer-typing #chat-status::after {
+  content: "...";
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+  vertical-align: bottom;
+  animation: typing-dots 1.2s steps(4) infinite;
+}
+@keyframes typing-dots { to { width: 1.25em; } }
+
 /* Photo/video being sent or received. */
 .file-bubble { display: grid; gap: 6px; min-width: min(260px, 70vw); padding: 14px 16px 12px; }
 .file-kind { font-family: var(--font-display); font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.6; }
@@ -656,15 +718,29 @@ img.media { cursor: zoom-in; }
 .composer-row { display: flex; gap: 8px; }
 .composer-meta {
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: flex-end;
   padding: 0 20px;
   font-family: var(--font-display);
   font-size: 13px;
   color: var(--mute);
 }
-#composer-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#char-count { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+#char-count { font-variant-numeric: tabular-nums; }
+
+/* "Replying to ..." bar above the input. */
+.reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 14px;
+  background: var(--soft-cloud);
+  box-shadow: inset 3px 0 0 var(--ink);
+  animation: rise 0.25s var(--ease-out);
+}
+.reply-bar-text { flex: 1; min-width: 0; display: grid; font-size: 13px; }
+.reply-bar-text strong { font-weight: 600; }
+.reply-preview { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-bar .btn-icon-small { width: 32px; height: 32px; background: var(--canvas); font-size: 18px; }
 #char-count.near-limit { color: var(--error); }
 
 /* ---------- Dialogs & toasts: flat, zero radius ---------- */
@@ -732,9 +808,11 @@ img.media { cursor: zoom-in; }
   .btn.seg { flex: 1; padding: 0 8px; }
   .chat-title strong { font-size: 17px; }
   #chat-status { font-size: 11px; letter-spacing: 0.05em; }
-  /* Compact stats strip: label and value side by side, one short line per cell. */
-  .link-cell { display: flex; align-items: baseline; gap: 8px; padding: 7px 14px; }
-  .link-label { flex-shrink: 0; font-size: 11px; }
+  /* Compact stats strip: label and value side by side, one line per cell. The left column
+     (route, encryption) gets the room; the right one (latency, server copy) is short. */
+  .link-strip { grid-template-columns: minmax(0, 1fr) auto; }
+  .link-cell { display: flex; align-items: baseline; gap: 6px; padding: 7px 12px; }
+  .link-label { flex-shrink: 0; font-size: 10px; }
   .link-value { min-width: 0; font-size: 13px; }
   .app { grid-template-columns: 1fr; }
   .chat-panel { display: none; }

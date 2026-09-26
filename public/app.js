@@ -8,6 +8,11 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 const RECONNECT_DELAY_MS = 3_000;
 const STATS_INTERVAL_MS = 2_000;
+const RESUME_INTERVAL_MS = 4_000;   // how often a dropped chat asks to reconnect
+const TYPING_SEND_MS = 2_500;       // at most one "typing" signal per this interval
+const TYPING_SHOW_MS = 4_000;       // hide "Typing" if no signal arrives for this long
+const SWIPE_REPLY_PX = 56;          // swipe a message this far right to reply
+const PREVIEW_LENGTH = 100;         // characters of a message shown in a reply quote
 const GROUP_WINDOW_MS = 2 * 60_000;
 const MAX_MESSAGE_LENGTH = 2000;
 const CHUNK_SIZE = 16 * 1024; // a DataChannel message size every browser handles
@@ -20,6 +25,7 @@ const NAME_PATTERN = /^[a-z0-9_]{3,20}$/;
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;
 const IDENTITY_KEY = 'cipherlink-identity';
+const REPLY_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 6 6v5" /></svg>';
 const NAME_WORDS = [
   ['calm', 'quiet', 'swift', 'bold', 'lucky', 'misty', 'sunny', 'brave', 'fuzzy', 'witty', 'mellow', 'rapid'],
   ['otter', 'heron', 'panda', 'falcon', 'lynx', 'koala', 'badger', 'gecko', 'raven', 'bison', 'mango', 'comet'],
@@ -35,7 +41,10 @@ const state = {
   contacts: new Map(),  // code -> { code, name, addedAt, lastText, time }
   online: new Set(),    // contact codes that are online right now
   names: new Map(),     // code -> display name, for people who aren't contacts yet
-  chat: null,           // the one active chat: { peer, status: 'requesting' | 'connecting' | 'connected', connection, ... }
+  // The one active chat: { peer, status, connection, ... }. Status goes requesting ->
+  // connecting -> connected, and connected <-> reconnecting if the direct link drops.
+  chat: null,
+  replyTo: null,        // { mid, from, preview } of the message being replied to
   incoming: null,       // code whose chat request is waiting for my answer
   incomingTimer: null,
   viewing: null,        // code whose conversation is open in the main panel
@@ -127,7 +136,8 @@ function connect() {
     // The server is gone, but an already-open chat keeps working: it's peer-to-peer.
     if (state.serverOnline) toast('Lost connection to the server. Reconnecting. Open chats keep working.');
     setServerStatus(false);
-    if (state.chat && state.chat.status !== 'connected') endChat(null, false);
+    // A new request needs the server; a live or reconnecting chat carries on without it.
+    if (isStarting(state.chat)) endChat(null, false);
     if (state.incoming) closeRequestDialog();
     state.online = new Set();
     renderAll();
@@ -156,6 +166,7 @@ function handleServerMessage(message) {
       saveIdentity(identity);
       setServerStatus(true);
       showApp();
+      if (state.chat?.status === 'reconnecting') requestResume(state.chat);
       break;
     case 'join-error': {
       if (state.me) {
@@ -184,6 +195,8 @@ function handleServerMessage(message) {
     case 'presence-update':
       if (message.online) {
         state.online.add(message.code);
+        // They're back: retry now instead of waiting for the next attempt.
+        if (state.chat?.peer === message.code && state.chat.status === 'reconnecting') requestResume(state.chat);
       } else {
         state.online.delete(message.code);
         onUserGone(message.code);
@@ -191,7 +204,7 @@ function handleServerMessage(message) {
       renderAll();
       break;
     case 'chat-request':
-      onChatRequest(message.from);
+      onChatRequest(message.from, message.data);
       break;
     case 'chat-response':
       onChatResponse(message.from, message.data);
@@ -221,8 +234,9 @@ function rememberName(code, name) {
 
 function onUserGone(code) {
   if (state.incoming === code) closeRequestDialog();
-  // A connected chat doesn't depend on the server; the P2P connection reports its own drop.
-  if (state.chat?.peer === code && state.chat.status !== 'connected') {
+  // Only a request that hasn't connected yet fails here. A connected chat doesn't depend
+  // on the server, and a reconnecting one keeps waiting for them to come back.
+  if (state.chat?.peer === code && isStarting(state.chat)) {
     endChat(state.contacts.has(code)
       ? `${nameOf(code)} went offline.`
       : `No one with code ${formatCode(code)} is online right now. You both need to be online.`, false);
@@ -276,6 +290,11 @@ async function copyCode() {
 // requester: chat-request ──► receiver: Accept/Decline ──► chat-response ──► WebRTC handshake
 
 function requestChat(code) {
+  // They're already asking us: pressing Chat on them means yes.
+  if (state.incoming === code) {
+    answerRequest(true);
+    return;
+  }
   if (state.chat) return;
   state.chat = {
     peer: code,
@@ -286,8 +305,22 @@ function requestChat(code) {
   openConversation(code);
 }
 
-function onChatRequest(from) {
-  if (state.chat || state.incoming) {
+function onChatRequest(from, data) {
+  const chat = state.chat;
+  if (chat?.peer === from) {
+    if (chat.status === 'requesting') {
+      // Both pressed Chat at the same moment: the lower code accepts, the other waits for it.
+      if (state.me.code < from) acceptChat(from);
+      return;
+    }
+    // Mid-handshake already, or both sides retrying at once (the lower code answers).
+    if (chat.status === 'connecting' || (chat.status === 'reconnecting' && data?.resume && state.me.code > from)) return;
+    // They lost the link, or reloaded and asked again: rebuild it without a popup.
+    acceptChat(from, { resume: true });
+    return;
+  }
+  if (data?.resume && state.incoming === from) return; // their earlier retry is already on screen
+  if (chat || state.incoming) {
     sendToServer({ type: 'chat-response', to: from, data: { accepted: false, reason: 'busy' } });
     return;
   }
@@ -319,6 +352,16 @@ function answerRequest(accepted) {
   sendToServer({ type: 'chat-response', to: from, data: { accepted, reason: accepted ? null : 'declined' } });
 }
 
+// Accepts without a popup: when both sides requested at once, and when an existing chat
+// reconnects after its link dropped.
+function acceptChat(from, { resume = false } = {}) {
+  const old = state.chat;
+  startConnection(from, false, { resume });
+  old?.connection?.close(); // state.chat is already the new chat, so this doesn't end it
+  if (!resume) addContact(from);
+  sendToServer({ type: 'chat-response', to: from, data: { accepted: true } });
+}
+
 function closeRequestDialog() {
   clearTimeout(state.incomingTimer);
   state.incoming = null;
@@ -326,13 +369,14 @@ function closeRequestDialog() {
 }
 
 function onChatResponse(from, data) {
-  if (state.chat?.peer !== from || state.chat.status !== 'requesting') return;
+  const chat = state.chat;
+  if (chat?.peer !== from || (chat.status !== 'requesting' && chat.status !== 'reconnecting')) return;
   if (!data?.accepted) {
     endChat(data?.reason === 'busy' ? `${nameOf(from)} is busy in another chat.` : `${nameOf(from)} declined your request.`, false);
     return;
   }
-  addContact(from);
-  startConnection(from, true);
+  if (chat.status === 'requesting') addContact(from);
+  startConnection(from, true, { resume: chat.status === 'reconnecting' });
 }
 
 function onPeerEnded(from) {
@@ -345,14 +389,15 @@ function onPeerEnded(from) {
 
 // ---------- Peer-to-peer connection ----------
 
-function startConnection(peer, initiator) {
-  clearTimeout(state.chat?.timer);
-  const chat = { peer, status: 'connecting', outgoing: [], sending: false, incomingFile: null };
+// `resume` marks a reconnection of an existing chat: if it fails, keep retrying instead of ending.
+function startConnection(peer, initiator, { resume = false } = {}) {
+  retireChat(state.chat);
+  const chat = { peer, status: 'connecting', resume, outgoing: [], sending: false, incomingFile: null };
   state.chat = chat;
-  chat.timer = setTimeout(
-    () => endChat("Couldn't connect. Your network may be blocking direct peer-to-peer connections."),
-    CONNECT_TIMEOUT_MS,
-  );
+  chat.timer = setTimeout(() => {
+    if (resume) startReconnecting();
+    else endChat("Couldn't connect. Your network may be blocking direct peer-to-peer connections.");
+  }, CONNECT_TIMEOUT_MS);
 
   chat.connection = createPeer({
     initiator,
@@ -362,7 +407,7 @@ function startConnection(peer, initiator) {
       if (state.chat !== chat) return;
       clearTimeout(chat.timer);
       chat.status = 'connected';
-      toast(`Connected directly to ${nameOf(peer)}.`);
+      toast(resume ? `Reconnected to ${nameOf(peer)}.` : `Connected directly to ${nameOf(peer)}.`);
       pollConnectionInfo(chat);
       chat.statsTimer = setInterval(() => pollConnectionInfo(chat), STATS_INTERVAL_MS);
       renderAll();
@@ -378,24 +423,71 @@ function startConnection(peer, initiator) {
       if (state.chat === chat) onPeerBinary(chat, data);
     },
     onClose: () => {
-      if (state.chat === chat) endChat(`Chat with ${nameOf(peer)} ended.`, false);
+      if (state.chat !== chat) return;
+      // An established chat never just ends: reconnect. A first attempt that fails does end.
+      if (chat.status === 'connected' || chat.resume) startReconnecting();
+      else endChat(`Chat with ${nameOf(peer)} ended.`, false);
     },
   });
   renderAll();
+}
+
+// True while a new chat is still being set up (as opposed to connected or reconnecting).
+function isStarting(chat) {
+  return Boolean(chat) && (chat.status === 'requesting' || chat.status === 'connecting') && !chat.resume;
+}
+
+// The direct link dropped (the phone put the browser in the background, the network
+// changed). Keep the chat open and rebuild the link; only End chat, on either side, closes it.
+function startReconnecting() {
+  const old = state.chat;
+  if (!old) return;
+  retireChat(old);
+  const chat = { peer: old.peer, status: 'reconnecting', outgoing: [], sending: false, incomingFile: null };
+  state.chat = chat;
+  old.connection?.close();
+  if (old.status === 'connected') toast(`Connection to ${nameOf(chat.peer)} lost. Reconnecting.`);
+  // A short pause first, so a "bye" or "end" that is still on its way can arrive.
+  chat.timer = setTimeout(() => requestResume(chat), 1000);
+  chat.retry = setInterval(() => requestResume(chat), RESUME_INTERVAL_MS);
+  renderAll();
+}
+
+function requestResume(chat) {
+  if (state.chat !== chat || chat.status !== 'reconnecting') return;
+  sendToServer({ type: 'chat-request', to: chat.peer, data: { resume: true } });
+}
+
+// Stops a chat's timers and drops its unfinished photo/video transfers, which can't
+// continue on a different connection.
+function retireChat(chat) {
+  if (!chat) return;
+  clearTimeout(chat.timer);
+  clearInterval(chat.statsTimer);
+  clearInterval(chat.retry);
+  clearTimeout(chat.typingTimer);
+  for (const transfer of [...state.transfers.values()]) {
+    if (transfer.peer === chat.peer) failTransfer(transfer);
+  }
 }
 
 function endChat(reason = null, notifyPeer = true) {
   const chat = state.chat;
   if (!chat) return;
   state.chat = null;
-  clearTimeout(chat.timer);
-  clearInterval(chat.statsTimer);
-  // Unfinished photo/video transfers can't continue without the connection.
-  for (const transfer of [...state.transfers.values()]) {
-    if (transfer.peer === chat.peer) failTransfer(transfer);
+  retireChat(chat);
+  clearReply();
+  if (notifyPeer) {
+    // "bye" goes over the direct link, so the other side ends the chat instead of
+    // mistaking the close for a dropped connection. The server "end" is a backup.
+    const sentBye = chat.connection?.send({ type: 'bye' });
+    sendToServer({ type: 'end', to: chat.peer });
+    // Give "bye" a moment to leave before tearing the connection down.
+    if (sentBye) setTimeout(() => chat.connection.close(), 250);
+    else chat.connection?.close();
+  } else {
+    chat.connection?.close();
   }
-  if (notifyPeer) sendToServer({ type: 'end', to: chat.peer });
-  chat.connection?.close();
   if (reason) toast(reason);
   // A request to a code that never became a contact leaves nothing to show.
   if (state.viewing === chat.peer && !state.contacts.has(chat.peer)) state.viewing = null;
@@ -412,20 +504,40 @@ async function pollConnectionInfo(chat) {
 
 // ---------- Messages ----------
 
+// Every message carries a shared id (`mid`) so replies can point at it on both devices.
+// Storage keys stay local (`id`), because two tabs in one browser share the database.
 async function sendMessage(text) {
   const chat = state.chat;
   if (chat?.status !== 'connected') return;
-  if (!chat.connection.send({ type: 'message', text })) {
+  const mid = newId();
+  const replyTo = state.replyTo;
+  if (!chat.connection.send({ type: 'message', mid, text, replyTo })) {
     toast('Message not sent: the connection was lost.');
     return;
   }
+  chat.typingSentAt = 0; // the next keystroke announces typing again right away
+  clearReply();
   sounds.sent();
-  await addMessage({ peer: chat.peer, from: state.me.code, text });
+  await saveRecord({ id: mid, mid, owner: state.me.code, peer: chat.peer, from: state.me.code, text, replyTo, time: Date.now() });
 }
 
 function onPeerMessage(chat, message) {
   if (message.type === 'message' && typeof message.text === 'string') {
-    addMessage({ peer: chat.peer, from: chat.peer, text: message.text.slice(0, MAX_MESSAGE_LENGTH) });
+    hidePeerTyping(chat);
+    saveRecord({
+      id: newId(),
+      mid: cleanId(message.mid),
+      owner: state.me.code,
+      peer: chat.peer,
+      from: chat.peer,
+      text: message.text.slice(0, MAX_MESSAGE_LENGTH),
+      replyTo: cleanReply(message.replyTo, chat.peer),
+      time: Date.now(),
+    });
+  } else if (message.type === 'typing') {
+    showPeerTyping(chat);
+  } else if (message.type === 'bye') {
+    endChat(`${nameOf(chat.peer)} ended the chat.`, false);
   } else if (message.type === 'file-start') {
     startIncomingFile(chat, message);
   } else if (message.type === 'file-end') {
@@ -433,8 +545,80 @@ function onPeerMessage(chat, message) {
   }
 }
 
-function addMessage({ peer, from, text }) {
-  return saveRecord({ id: newId(), owner: state.me.code, peer, from, text, time: Date.now() });
+// Data from the other browser is untrusted: keep only well-formed ids and replies.
+function cleanId(id) {
+  return typeof id === 'string' && id.length <= 64 ? id : newId();
+}
+
+function cleanReply(reply, peer) {
+  if (!reply || typeof reply !== 'object') return null;
+  const { mid, from, preview } = reply;
+  if (typeof mid !== 'string' || mid.length > 64 || typeof preview !== 'string') return null;
+  if (from !== peer && from !== state.me.code) return null;
+  return { mid, from, preview: preview.slice(0, PREVIEW_LENGTH) };
+}
+
+// ---------- Typing indicator ----------
+
+function sendTyping() {
+  const chat = state.chat;
+  if (chat?.status !== 'connected' || !$('message-input').value) return;
+  if (Date.now() - (chat.typingSentAt ?? 0) < TYPING_SEND_MS) return;
+  chat.typingSentAt = Date.now();
+  chat.connection.send({ type: 'typing' });
+}
+
+function showPeerTyping(chat) {
+  clearTimeout(chat.typingTimer);
+  chat.peerTyping = true;
+  chat.typingTimer = setTimeout(() => hidePeerTyping(chat), TYPING_SHOW_MS);
+  renderStatusLine();
+  renderContacts();
+}
+
+function hidePeerTyping(chat) {
+  clearTimeout(chat.typingTimer);
+  if (!chat.peerTyping) return;
+  chat.peerTyping = false;
+  renderStatusLine();
+  renderContacts();
+}
+
+// ---------- Replies ----------
+
+function startReply(record) {
+  if (state.chat?.status !== 'connected' || state.chat.peer !== record.peer) {
+    toast('Connect to reply.');
+    return;
+  }
+  state.replyTo = { mid: record.mid ?? record.id, from: record.from, preview: previewOf(record).slice(0, PREVIEW_LENGTH) };
+  renderReplyBar();
+  $('message-input').focus();
+}
+
+function clearReply() {
+  state.replyTo = null;
+  renderReplyBar();
+}
+
+function renderReplyBar() {
+  const reply = state.replyTo;
+  $('reply-bar').hidden = !reply;
+  if (!reply) return;
+  $('reply-name').textContent = reply.from === state.me.code ? 'yourself' : nameOf(reply.from);
+  $('reply-preview').textContent = reply.preview;
+}
+
+function scrollToMessage(mid) {
+  const target = $('messages').querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+  if (!target) {
+    toast("That message isn't saved on this device.");
+    return;
+  }
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  target.classList.remove('flash');
+  void target.offsetWidth; // restart the animation if it's already flashing
+  target.classList.add('flash');
 }
 
 // Saves a finished message (text, photo or video) and shows it.
@@ -527,7 +711,8 @@ function startIncomingFile(chat, { id, name, mime, size }) {
     && Number.isInteger(size) && size > 0 && size <= MAX_FILE_BYTES;
   if (!valid) return; // its chunks will be ignored
   const transfer = beginTransfer({ peer: chat.peer, from: chat.peer, file: { name: cleanFileName(name), mime, size }, direction: 'Receiving' });
-  // Our own id for storage; the sender's id only matches its "file-end".
+  // Our own id for storage; the sender's id matches its "file-end" and is the shared id for replies.
+  transfer.mid = cleanId(id);
   chat.incomingFile = { remoteId: id, transfer, chunks: [], received: 0 };
 }
 
@@ -581,6 +766,7 @@ function completeTransfer(transfer, blob) {
   state.transfers.delete(transfer.id);
   return saveRecord({
     id: transfer.id,
+    mid: transfer.mid ?? transfer.id, // the sender's id doubles as the shared id
     owner: state.me.code,
     peer: transfer.peer,
     from: transfer.from,
@@ -621,8 +807,9 @@ async function exportChat(code) {
     peer: { name: nameOf(code), code: formatCode(code) },
     exportedAt: new Date().toISOString(),
     note: 'Photos and videos are listed by name only; the files themselves are not included.',
-    messages: messages.map(({ from, text, file, time }) => ({
+    messages: messages.map(({ from, text, file, replyTo, time }) => ({
       from: from === state.me.code ? state.me.name : nameOf(code),
+      ...(replyTo ? { replyTo: replyTo.preview } : {}),
       ...(file ? { file: `${mediaKind(file.mime)}: ${file.name} (${formatBytes(file.size)})` } : { text }),
       time: new Date(time).toISOString(),
     })),
@@ -671,8 +858,11 @@ function renderContacts() {
 }
 
 function contactSubtitle(contact, online) {
-  if (state.chat?.peer === contact.code) {
-    return { requesting: 'Waiting for reply', connecting: 'Connecting', connected: 'In chat' }[state.chat.status];
+  const chat = state.chat;
+  if (chat?.peer === contact.code) {
+    if (chat.status === 'connected' && chat.peerTyping) return 'Typing…';
+    if (chat.resume && chat.status === 'connecting') return 'Reconnecting';
+    return { requesting: 'Waiting for reply', connecting: 'Connecting', connected: 'In chat', reconnecting: 'Reconnecting' }[chat.status];
   }
   return contact.lastText ?? (online ? 'Online' : 'Offline');
 }
@@ -684,19 +874,17 @@ function renderHeader() {
   document.body.classList.toggle('show-chat', Boolean(peer));
   if (!peer) return;
 
-  const status = state.chat?.peer === peer ? state.chat.status : null;
+  const chat = state.chat?.peer === peer ? state.chat : null;
+  const status = chat?.status ?? null;
   const online = state.online.has(peer);
   const isContact = state.contacts.has(peer);
+  // An established chat, including one that is reconnecting, is ended; a new request is cancelled.
+  const established = status === 'connected' || status === 'reconnecting' || Boolean(chat?.resume);
 
   $('chat-avatar').textContent = initial(nameOf(peer));
   $('chat-name').textContent = nameOf(peer);
   $('chat-code').textContent = formatCode(peer);
-  $('conversation').dataset.status = status ?? '';
-  $('chat-status').textContent = {
-    connected: 'Connected directly',
-    requesting: 'Waiting for them to accept',
-    connecting: 'Connecting',
-  }[status] ?? (online ? 'Online' : 'Offline. Saved history');
+  renderStatusLine();
 
   // Secondary tools sit together in one segmented pill; the main action (end, cancel or
   // request) stands on its own next to it.
@@ -712,7 +900,7 @@ function renderHeader() {
     group.append(...tools);
     actions.append(group);
   }
-  if (status === 'connected') {
+  if (established) {
     actions.append(button('End chat', () => endChat(), 'btn-small btn-outline'));
   } else if (status) {
     actions.append(button('Cancel', () => endChat(), 'btn-small btn-outline'));
@@ -726,9 +914,27 @@ function renderHeader() {
   $('message-input').disabled = !canType;
   $('send-btn').disabled = !canType;
   $('attach-btn').disabled = !canType;
-  $('message-input').placeholder = canType ? 'Type a message' : 'Connect to send messages';
-  $('composer-note').textContent = canType ? `Goes straight to ${nameOf(peer)}. Not stored on any server.` : 'Not connected';
+  $('message-input').placeholder = canType ? 'Type a message'
+    : established ? 'Reconnecting…'
+    : 'Connect to send messages';
   renderLinkStrip();
+}
+
+// The small line under the name: connection state, or "Typing" while they type.
+function renderStatusLine() {
+  const peer = state.viewing;
+  if (!peer) return;
+  const chat = state.chat?.peer === peer ? state.chat : null;
+  const status = chat?.resume && chat.status === 'connecting' ? 'reconnecting' : chat?.status;
+  const typing = status === 'connected' && Boolean(chat.peerTyping);
+  $('conversation').dataset.status = status ?? '';
+  $('conversation').classList.toggle('peer-typing', typing);
+  $('chat-status').textContent = typing ? 'Typing' : {
+    connected: 'Connected directly',
+    requesting: 'Waiting for them to accept',
+    connecting: 'Connecting',
+    reconnecting: 'Reconnecting',
+  }[status] ?? (state.online.has(peer) ? 'Online' : 'Offline. Saved history');
 }
 
 // The black strip under the chat header: live facts about the direct connection.
@@ -769,6 +975,7 @@ function describeEncryption(info) {
 }
 
 function openConversation(code) {
+  if (state.viewing !== code) clearReply();
   state.viewing = code;
   renderAll();
   loadMessages();
@@ -851,12 +1058,12 @@ function fillBubble(item, record) {
     return;
   }
 
+  // A saved message: optional reply quote, the content, and a reply button.
+  item.dataset.mid = record.mid ?? record.id;
+  let content;
   if (record.file && !record.blob) {
-    item.replaceChildren(el('p', null, `${mediaKind(record.file.mime)} unavailable: ${record.file.name}`), time);
-    return;
-  }
-
-  if (record.file) {
+    content = [el('p', null, `${mediaKind(record.file.mime)} unavailable: ${record.file.name}`), time];
+  } else if (record.file) {
     item.classList.add('media-bubble');
     const url = URL.createObjectURL(record.blob);
     objectUrls.add(url);
@@ -864,11 +1071,33 @@ function fillBubble(item, record) {
     Object.assign(save, { href: url, download: record.file.name });
     const meta = el('div', 'media-meta');
     meta.append(save, el('span', null, formatBytes(record.file.size)), time);
-    item.replaceChildren(mediaElement(record, url), meta);
-    return;
+    content = [mediaElement(record, url), meta];
+  } else {
+    content = [el('p', null, record.text), time];
   }
+  item.replaceChildren(...(record.replyTo ? [replyQuote(record.replyTo)] : []), ...content, replyButton(record));
+}
 
-  item.replaceChildren(el('p', null, record.text), time);
+function replyQuote(reply) {
+  const quote = el('button', 'reply-quote');
+  quote.type = 'button';
+  quote.append(el('strong', null, reply.from === state.me.code ? 'You' : nameOf(reply.from)), el('span', null, reply.preview));
+  quote.onclick = () => scrollToMessage(reply.mid);
+  return quote;
+}
+
+// Shown on hover with a mouse; on touch screens, swiping the message right presses it.
+function replyButton(record) {
+  const reply = el('button', 'reply-btn');
+  reply.type = 'button';
+  reply.title = 'Reply';
+  reply.setAttribute('aria-label', 'Reply');
+  reply.innerHTML = REPLY_ICON; // fixed markup, no user data
+  reply.onclick = (event) => {
+    event.stopPropagation();
+    startReply(record);
+  };
+  return reply;
 }
 
 // Media is only ever shown through <img> and <video>, never opened as a page, so a
@@ -1111,7 +1340,61 @@ $('composer').addEventListener('submit', (event) => {
   updateCharCount();
   sendMessage(text);
 });
-$('message-input').addEventListener('input', updateCharCount);
+$('message-input').addEventListener('input', () => {
+  updateCharCount();
+  sendTyping();
+});
+$('message-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.replyTo) clearReply();
+});
+$('reply-cancel').onclick = () => {
+  clearReply();
+  $('message-input').focus();
+};
+
+// Swipe a message to the right to reply (touch screens). Vertical movement means the
+// person is scrolling, so the swipe is dropped.
+let swipe = null;
+$('messages').addEventListener('touchstart', (event) => {
+  const bubble = event.target.closest('.bubble[data-mid]');
+  if (!bubble || event.touches.length !== 1 || event.target.closest('video, a, .reply-quote')) return;
+  swipe = { bubble, x: event.touches[0].clientX, y: event.touches[0].clientY, dx: 0, active: false };
+}, { passive: true });
+$('messages').addEventListener('touchmove', (event) => {
+  if (!swipe) return;
+  const dx = event.touches[0].clientX - swipe.x;
+  const dy = event.touches[0].clientY - swipe.y;
+  if (!swipe.active) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+      swipe = null;
+      return;
+    }
+    if (dx < 10) return;
+    swipe.active = true;
+  }
+  swipe.dx = Math.max(0, Math.min(dx, 80));
+  swipe.bubble.style.transform = `translateX(${swipe.dx}px)`;
+}, { passive: true });
+function endSwipe(allowReply) {
+  if (!swipe) return;
+  const { bubble, dx, active } = swipe;
+  swipe = null;
+  if (!active) return;
+  bubble.style.transition = 'transform 0.2s';
+  bubble.style.transform = '';
+  bubble.addEventListener('transitionend', () => { bubble.style.transition = ''; }, { once: true });
+  if (allowReply && dx >= SWIPE_REPLY_PX) bubble.querySelector('.reply-btn')?.click();
+}
+$('messages').addEventListener('touchend', () => endSwipe(true));
+$('messages').addEventListener('touchcancel', () => endSwipe(false));
+
+// Phones pause pages in the background. When the app comes back to the front, reconnect
+// right away instead of waiting for the next retry.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !state.me) return;
+  if (!state.ws) connect();
+  else if (state.chat?.status === 'reconnecting') requestResume(state.chat);
+});
 
 $('attach-btn').onclick = () => $('file-input').click();
 $('file-input').addEventListener('change', (event) => {
