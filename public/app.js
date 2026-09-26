@@ -439,7 +439,13 @@ function addMessage({ peer, from, text }) {
 
 // Saves a finished message (text, photo or video) and shows it.
 async function saveRecord(record) {
-  await storage.saveMessage(record);
+  try {
+    await storage.saveMessage(record);
+  } catch (error) {
+    // Storage full or blocked: still show it for this session instead of losing it.
+    console.error('Saving message failed:', error);
+    toast(`Couldn't save this ${record.file ? mediaKind(record.file.mime).toLowerCase() : 'message'} on this device. It will disappear if you reload.`);
+  }
   if (record.from === state.me.code) {
     if (record.file) sounds.sent(); // text plays its sound the moment it's sent
   } else {
@@ -476,8 +482,11 @@ async function drainOutgoing(chat) {
     const file = chat.outgoing.shift();
     try {
       await sendFile(chat, file);
-    } catch {
-      toast(`${file.name} wasn't sent: the connection dropped.`);
+    } catch (error) {
+      console.error('Sending file failed:', error);
+      toast(state.chat === chat
+        ? `${file.name} couldn't be sent. Try again.`
+        : `${file.name} wasn't sent: the connection dropped.`);
     }
   }
   chat.sending = false;
@@ -490,11 +499,13 @@ async function sendFile(chat, file) {
     file: { name: file.name, mime: file.type, size: file.size },
     direction: 'Sending',
   });
+  const chunks = [];
   try {
     if (!chat.connection.send({ type: 'file-start', id: transfer.id, ...transfer.file })) throw new Error('Channel closed');
     for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-      // Read one slice at a time, so a 100 MB video is never fully loaded into memory.
+      // Read one slice at a time; backpressure in sendBinary keeps the send queue small.
       const chunk = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer();
+      chunks.push(chunk);
       await chat.connection.sendBinary(chunk);
       updateTransfer(transfer, Math.min(offset + CHUNK_SIZE, file.size) / file.size);
     }
@@ -503,7 +514,10 @@ async function sendFile(chat, file) {
     failTransfer(transfer);
     throw error;
   }
-  await completeTransfer(transfer, file);
+  // Keep a copy built from the chunks already read, like the receiver does. Storing the
+  // picked File itself fails on some phones (Chrome can't always copy gallery files
+  // into IndexedDB).
+  await completeTransfer(transfer, new Blob(chunks, { type: file.type }));
 }
 
 function startIncomingFile(chat, { id, name, mime, size }) {
@@ -734,6 +748,7 @@ function renderLinkStrip() {
   ];
   strip.replaceChildren(...cells.map(([label, value]) => {
     const cell = el('div', 'link-cell');
+    cell.title = `${label}: ${value}`; // full text if a phone screen cuts it short
     cell.append(el('span', 'link-label', label), el('span', 'link-value', value));
     return cell;
   }));

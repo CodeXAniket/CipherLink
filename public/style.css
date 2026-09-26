@@ -730,7 +730,12 @@ img.media { cursor: zoom-in; }
   .chat-code { display: none; }
   .action-group { order: 1; flex: 1 1 100%; }
   .btn.seg { flex: 1; padding: 0 8px; }
-  .link-value { font-size: 14px; }
+  .chat-title strong { font-size: 17px; }
+  #chat-status { font-size: 11px; letter-spacing: 0.05em; }
+  /* Compact stats strip: label and value side by side, one short line per cell. */
+  .link-cell { display: flex; align-items: baseline; gap: 8px; padding: 7px 14px; }
+  .link-label { flex-shrink: 0; font-size: 11px; }
+  .link-value { min-width: 0; font-size: 13px; }
   .app { grid-template-columns: 1fr; }
   .chat-panel { display: none; }
   body.show-chat .sidebar { display: none; }
@@ -739,7 +744,6 @@ img.media { cursor: zoom-in; }
   .chat-header { padding: 10px 16px; }
   .messages { padding: 16px; }
   .composer { padding: 12px 16px 8px; }
-  .link-cell { padding: 8px 16px 9px; }
   .step { min-height: 200px; }
   .bubble { max-width: 85%; }
   .how { padding-top: 32px; }
