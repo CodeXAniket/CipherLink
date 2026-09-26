@@ -1,0 +1,21 @@
+{
+  "name": "cipherlink",
+  "version": "1.0.0",
+  "description": "Peer-to-peer chat in the browser. The server only introduces peers; messages go directly between devices over WebRTC.",
+  "author": "Aniket Deotale",
+  "homepage": "https://cipherlink.duckdns.org",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "ws": "^8.22.0"
+  }
+}

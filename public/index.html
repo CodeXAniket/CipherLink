@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CipherLink by Aniket Deotale</title>
+  <meta name="description" content="Chat directly with friends. Messages go browser to browser over WebRTC and are stored only on your device.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <!-- Intro: the logo draws itself, then a shop shutter rolls up to reveal the page. -->
+  <div id="intro" class="intro" aria-hidden="true">
+    <div class="intro-logo">
+      <svg class="logo-mark" viewBox="0 0 48 24">
+        <circle class="logo-node" cx="6" cy="12" r="5" />
+        <circle class="logo-node" cx="42" cy="12" r="5" />
+        <path class="logo-link" d="M11 12h26" />
+      </svg>
+      <span class="intro-word">CipherLink</span>
+    </div>
+    <span class="intro-credit">Made by Aniket Deotale</span>
+    <span class="shutter-handle"></span>
+  </div>
+
+  <header class="navbar">
+    <div class="brand">
+      <svg class="logo-mark" viewBox="0 0 48 24" aria-hidden="true">
+        <circle class="logo-node" cx="6" cy="12" r="5" />
+        <circle class="logo-node" cx="42" cy="12" r="5" />
+        <path class="logo-link" d="M11 12h26" />
+      </svg>
+      <span class="wordmark">CipherLink</span>
+    </div>
+    <div id="session" class="session hidden">
+      <span id="server-status" class="status-dot" title="Connected to signaling server"></span>
+      <span class="session-name">Signed in as <strong id="me-name"></strong></span>
+      <button id="sound-btn" class="btn btn-small btn-sound" type="button" aria-pressed="true">Sound on</button>
+      <button id="leave-btn" class="btn btn-small" type="button">Leave</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Login -->
+    <section id="login-view" class="login">
+      <div class="page-width">
+        <div class="campaign">
+          <h1 class="display">
+            <span class="line" style="--i:0"><span>Talk direct.</span></span>
+            <span class="line" style="--i:1"><span>No server</span></span>
+            <span class="line" style="--i:2"><span>in the middle.</span></span>
+          </h1>
+
+          <div class="campaign-foot reveal">
+            <p class="lede" style="--i:3"><span class="lede-strong">Messages go from your browser straight to your friend's.</span> Your chat history stays on your device.</p>
+
+            <form id="login-form" class="login-form" style="--i:4" novalidate>
+              <label for="username">Display name</label>
+              <div class="field-row">
+                <input id="username" autocomplete="off" maxlength="20">
+                <button id="join-btn" class="btn btn-on-dark" type="submit">Join</button>
+              </div>
+              <div class="helper-row">
+                <p class="helper">3 to 20 characters. Letters, numbers or underscore.</p>
+                <button id="shuffle-btn" class="btn btn-link btn-link-dark" type="button">Random name</button>
+              </div>
+              <p id="login-error" class="error" role="alert"></p>
+
+              <div class="notice">
+                <span class="notice-title">Keep it random</span>
+                <p>Don't use your real name. Friends add you with your code, so your name can be anything.</p>
+                <p class="notice-code">Your code on this device <strong id="login-code"></strong></p>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <section class="how" aria-labelledby="how-title">
+          <h2 id="how-title">How a chat starts</h2>
+          <ol class="steps reveal">
+            <li class="step" style="--i:5">
+              <span class="step-tag">Via server</span>
+              <div><h3>Request</h3><p>You enter a friend's code. The server passes your request along.</p></div>
+            </li>
+            <li class="step" style="--i:6">
+              <span class="step-tag">Via server</span>
+              <div><h3>Handshake</h3><p>Both browsers swap connection details through the server.</p></div>
+            </li>
+            <li class="step" style="--i:7">
+              <span class="step-tag">
+                Peer to peer
+                <svg class="logo-mark" viewBox="0 0 48 24" aria-hidden="true">
+                  <circle class="logo-node" cx="6" cy="12" r="5" />
+                  <circle class="logo-node" cx="42" cy="12" r="5" />
+                  <path class="logo-link" d="M11 12h26" />
+                </svg>
+              </span>
+              <div><h3>Direct link</h3><p>An encrypted channel opens between you two. Messages never touch the server.</p></div>
+            </li>
+            <li class="step" style="--i:8">
+              <span class="step-tag">You and your friend</span>
+              <div><h3>Verify</h3><p>Compare a safety number to confirm nobody is listening in.</p></div>
+            </li>
+          </ol>
+        </section>
+      </div>
+    </section>
+
+    <!-- Main app -->
+    <section id="app-view" class="app hidden">
+      <aside class="sidebar">
+        <section class="my-code" aria-label="Your friend code">
+          <span class="my-code-label">Your friend code</span>
+          <div class="my-code-row">
+            <strong id="my-code" class="my-code-value"></strong>
+            <button id="copy-code-btn" class="btn btn-small btn-on-dark" type="button">Copy</button>
+          </div>
+          <p class="my-code-hint">Share it with friends so they can add you.</p>
+        </section>
+
+        <form id="add-form" class="add-form" novalidate>
+          <label for="add-code">Add someone by code</label>
+          <div class="field-row">
+            <input id="add-code" autocomplete="off" spellcheck="false" maxlength="9" placeholder="XXXX-XXXX">
+            <button class="btn btn-small btn-primary" type="submit">Send</button>
+          </div>
+          <p id="add-error" class="error" role="alert"></p>
+        </form>
+
+        <h2>Contacts <span id="contact-count" class="count">0</span></h2>
+        <p class="sidebar-note">Stored on this device only</p>
+        <ul id="contact-list" class="list"></ul>
+      </aside>
+
+      <section class="chat-panel">
+        <div id="empty-state" class="empty-state">
+          <svg class="logo-mark empty-mark" viewBox="0 0 48 24" aria-hidden="true">
+            <circle class="logo-node" cx="6" cy="12" r="5" />
+            <circle class="logo-node" cx="42" cy="12" r="5" />
+            <path class="logo-link" d="M11 12h26" />
+          </svg>
+          <h2>No chat open</h2>
+          <p>Pick a contact who's online, or add someone with their code. Once they accept, your browsers connect directly.</p>
+        </div>
+
+        <div id="conversation" class="conversation hidden">
+          <div class="chat-header">
+            <button id="back-btn" class="btn btn-link back-btn" type="button" aria-label="Back">←</button>
+            <div id="chat-avatar" class="avatar"></div>
+            <div class="chat-title">
+              <div class="chat-name-row">
+                <strong id="chat-name"></strong>
+                <span id="chat-code" class="chat-code"></span>
+              </div>
+              <span id="chat-status"></span>
+            </div>
+            <div id="chat-actions" class="chat-actions"></div>
+          </div>
+
+          <div id="link-strip" class="link-strip hidden" aria-label="Connection details"></div>
+
+          <div class="chat-stage">
+            <!-- Background: a slowly drifting dot grid and a faint logo; while connected,
+                 small packets travel both ways along its link line. -->
+            <div class="chat-bg" aria-hidden="true">
+              <svg class="chat-bg-mark" viewBox="0 0 48 24">
+                <circle class="logo-node" cx="6" cy="12" r="5" />
+                <circle class="logo-node" cx="42" cy="12" r="5" />
+                <path class="logo-link" d="M11 12h26" />
+                <circle class="packet packet-out" cx="11" cy="12" r="1.6" />
+                <circle class="packet packet-in" cx="37" cy="12" r="1.6" />
+              </svg>
+            </div>
+            <ol id="messages" class="messages"></ol>
+          </div>
+
+          <form id="composer" class="composer">
+            <div class="composer-row">
+              <button id="attach-btn" class="btn btn-icon" type="button" aria-label="Send a photo or video" title="Photo or video">+</button>
+              <input id="file-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif,video/mp4,video/webm,video/quicktime,video/ogg" multiple hidden>
+              <input id="message-input" autocomplete="off" maxlength="2000" placeholder="Type a message" aria-label="Message">
+              <button id="send-btn" class="btn btn-primary" type="submit">Send</button>
+            </div>
+            <div class="composer-meta">
+              <span id="composer-note"></span>
+              <span id="char-count">0 / 2000</span>
+            </div>
+          </form>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="request-dialog" class="dialog">
+    <h3>Chat request</h3>
+    <p><strong id="request-from"></strong> wants to chat with you.</p>
+    <p class="request-code">Code <strong id="request-code"></strong></p>
+    <p id="request-note" class="muted small"></p>
+    <div class="dialog-actions">
+      <button id="decline-btn" class="btn" type="button">Decline</button>
+      <button id="accept-btn" class="btn btn-primary" type="button">Accept</button>
+    </div>
+  </dialog>
+
+  <dialog id="safety-dialog" class="dialog">
+    <h3>Safety number</h3>
+    <p id="safety-number" class="safety-number"></p>
+    <p class="muted small">
+      Compare this with <strong id="safety-peer"></strong> on a call or in person. If both screens show the same
+      number, nobody is intercepting your chat. A new number is created for every chat session.
+    </p>
+    <div class="dialog-actions">
+      <button id="safety-close" class="btn btn-primary" type="button">Done</button>
+    </div>
+  </dialog>
+
+  <dialog id="media-dialog" class="media-dialog" aria-label="Photo">
+    <img id="media-full" alt="">
+    <button id="media-close" class="btn btn-small btn-on-dark" type="button">Close</button>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# Dependencies (reinstalled with `npm install`)
+node_modules/
+
+# Secrets: environment variables, SSH/TLS keys, certificates
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Logs
+npm-debug.log*
+*.log
+
+# Local AI tool and design-skill folders
+.claude/
+.agents/
+.impeccable/
+skills-lock.json
+DESIGN.md
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
