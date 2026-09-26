@@ -4,6 +4,10 @@
   "description": "Peer-to-peer chat in the browser. The server only introduces peers; messages go directly between devices over WebRTC.",
   "author": "Aniket Deotale",
   "homepage": "https://cipherlink.duckdns.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CodeXAniket/CipherLink.git"
+  },
   "type": "module",
   "main": "server.js",
   "scripts": {
