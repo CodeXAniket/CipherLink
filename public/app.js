@@ -1,5 +1,6 @@
 // App logic: your identity (friend code + display name), the signaling server connection,
 // contacts, the chat-request flow, and the UI. WebRTC lives in peer.js, storage in storage.js.
+import * as deviceKeys from './device-key.js';
 import { createPeer } from './peer.js';
 import * as notify from './notify.js';
 import * as sounds from './sounds.js';
@@ -18,6 +19,8 @@ const GROUP_WINDOW_MS = 2 * 60_000;
 const MAX_MESSAGE_LENGTH = 2000;
 const CHUNK_SIZE = 16 * 1024; // a DataChannel message size every browser handles
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
+const MAX_QUEUED_BYTES = 200 * 1024 * 1024; // photos/videos read and waiting to send at once
+const READ_RETRY_MS = 300;
 // Only formats that display inside <img> or <video>. No SVG: it can contain scripts.
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif']);
 const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/ogg']);
@@ -26,6 +29,7 @@ const NAME_PATTERN = /^[a-z0-9_]{3,20}$/;
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;
 const IDENTITY_KEY = 'cipherlink-identity';
+const SIGNED_IN_KEY = 'cipherlink-signed-in'; // "on" until Leave, so reopening the app signs straight in
 const REPLY_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 6 6v5" /></svg>';
 const DELETE_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" /></svg>';
 const LONG_PRESS_MS = 500;
@@ -40,12 +44,17 @@ const state = {
   ws: null,
   serverOnline: false,
   me: null,             // { code, name } once the server accepts us
+  key: null,            // this device's signing key (device-key.js)
   iceServers: [],
-  contacts: new Map(),  // code -> { code, name, addedAt, lastText, time }
+  pushKey: null,        // the server's Web Push key
+  contacts: new Map(),  // code -> { code, name, addedAt, key, lastText, time }
+  contactsLoaded: false,
+  requests: new Map(),  // code -> { time }: requests sent while I was offline, waiting for my answer
   online: new Set(),    // contact codes that are online right now
   names: new Map(),     // code -> display name, for people who aren't contacts yet
   // The one active chat: { peer, status, connection, ... }. Status goes requesting ->
   // connecting -> connected, and connected <-> reconnecting if the direct link drops.
+  // "reconnecting" also means waiting for a contact to come online to connect automatically.
   chat: null,
   replyTo: null,        // { mid, from, preview } of the message being replied to
   menuRecord: null,     // the message whose menu (reply / copy / delete) is open
@@ -119,6 +128,22 @@ function saveIdentity({ code, name, tabOnly }) {
   }
 }
 
+function setSignedIn(on) {
+  try {
+    localStorage.setItem(SIGNED_IN_KEY, on ? 'on' : 'off');
+  } catch {
+    // Storage blocked: the Join button is shown each visit.
+  }
+}
+
+function isSignedIn() {
+  try {
+    return localStorage.getItem(SIGNED_IN_KEY) === 'on';
+  } catch {
+    return false;
+  }
+}
+
 function nameOf(code) {
   return state.contacts.get(code)?.name ?? state.names.get(code) ?? formatCode(code);
 }
@@ -130,7 +155,7 @@ function connect() {
   const ws = new WebSocket(`${protocol}://${location.host}`);
   state.ws = ws;
 
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', code: identity.code, name: identity.name }));
+  // The server says hello with a one-time nonce; we join by signing it (see sendJoin).
   ws.onmessage = (event) => handleServerMessage(JSON.parse(event.data));
   ws.onclose = () => {
     if (state.ws !== ws) return; // we closed it on purpose
@@ -157,6 +182,19 @@ function sendToServer(message) {
   if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(message));
 }
 
+// Proves this browser owns its friend code: the server remembers the public key first used
+// with a code, and every join must be signed by the matching private key.
+async function sendJoin(nonce) {
+  try {
+    state.key = await deviceKeys.deviceKey(identity.code);
+    const signature = await deviceKeys.sign(state.key.privateKey, `cipherlink-join:${nonce}:${identity.code}`);
+    sendToServer({ type: 'join', code: identity.code, name: identity.name, key: state.key.jwk, signature });
+  } catch (error) {
+    console.error('Signing in failed:', error);
+    showLoginError("This browser can't create a device key. Use an up-to-date browser, over HTTPS.");
+  }
+}
+
 // Ask the server for the online status of my contacts, and only them.
 function sendWatch() {
   sendToServer({ type: 'watch', codes: [...state.contacts.keys()] });
@@ -166,13 +204,18 @@ function handleServerMessage(message) {
   if (message.from && message.fromName) rememberName(message.from, message.fromName);
 
   switch (message.type) {
+    case 'hello':
+      sendJoin(message.nonce);
+      break;
     case 'welcome':
       state.me = { code: message.code, name: message.name };
       state.iceServers = message.iceServers;
+      state.pushKey = message.pushKey;
       saveIdentity(identity);
+      setSignedIn(true);
       setServerStatus(true);
       showApp();
-      if (state.chat?.status === 'reconnecting') requestResume(state.chat);
+      syncPush();
       break;
     case 'join-error': {
       if (state.me) {
@@ -189,6 +232,12 @@ function handleServerMessage(message) {
         $('login-code').textContent = formatCode(identity.code);
         toast('Your code is open in another tab, so this tab uses a temporary code.');
         connect();
+      } else if (message.reason === 'code-taken') {
+        // This browser lost the key that owns its code (site data was partly cleared).
+        identity = { code: generateCode(), name: identity.name };
+        $('login-code').textContent = formatCode(identity.code);
+        toast('Your old code belongs to a different device key, so this browser has a new code.');
+        connect();
       } else {
         showLoginError(message.message);
       }
@@ -196,6 +245,8 @@ function handleServerMessage(message) {
     }
     case 'presence':
       state.online = new Set(message.online);
+      // Waiting for a contact who is online now: connect.
+      if (state.chat?.status === 'reconnecting') requestResume(state.chat);
       renderAll();
       break;
     case 'presence-update':
@@ -224,6 +275,15 @@ function handleServerMessage(message) {
     case 'peer-offline':
       onUserGone(message.code);
       break;
+    case 'request-waiting':
+      onRequestWaiting(message.code);
+      break;
+    case 'request-error':
+      if (state.chat?.peer === message.code && state.chat.status === 'requesting') endChat(message.message, false);
+      break;
+    case 'request-answer':
+      onRequestAnswer(message.from, message.data);
+      break;
   }
 }
 
@@ -234,7 +294,7 @@ function rememberName(code, name) {
   const contact = state.contacts.get(code);
   if (contact && contact.name !== name) {
     contact.name = name;
-    storage.saveContact({ owner: state.me.code, code, name, addedAt: contact.addedAt });
+    storage.saveContact(contactRecord(contact));
   }
 }
 
@@ -260,20 +320,38 @@ async function loadContacts() {
     lastText: previewOf(latest.get(contact.code)?.last),
     time: latest.get(contact.code)?.time ?? contact.addedAt,
   }]));
+  state.contactsLoaded = true;
 }
 
-// Called on both sides once a chat request is accepted.
+// What's saved for a contact (the rest of the in-memory entry is display state).
+function contactRecord({ code, name, addedAt, key }) {
+  return { owner: state.me.code, code, name, addedAt, ...(key ? { key } : {}) };
+}
+
+// Called on both sides once a chat request is accepted. Contacts are trusted: they
+// reconnect later without a new request.
 async function addContact(code) {
   const existing = state.contacts.get(code);
-  await storage.saveContact({ owner: state.me.code, code, name: nameOf(code), addedAt: existing?.addedAt ?? Date.now() });
+  // Their request was also waiting for me on the server: it's answered now.
+  if (state.requests.delete(code)) sendToServer({ type: 'request-answer', to: code, data: { accepted: true } });
+  await storage.saveContact(contactRecord({ code, name: nameOf(code), addedAt: existing?.addedAt ?? Date.now(), key: existing?.key }));
   await loadContacts();
   sendWatch();
   renderAll();
 }
 
+// Remembers a contact's device key from the first chat, so later chats can check it.
+async function saveContactKey(code, key) {
+  const contact = state.contacts.get(code);
+  if (!contact) return;
+  contact.key = key;
+  await storage.saveContact(contactRecord(contact)).catch((error) => console.error('Saving contact key failed:', error));
+}
+
 async function removeContact(code) {
   if (!confirm(`Remove ${nameOf(code)} from your contacts and delete your chat history with them? This can't be undone.`)) return;
   if (state.chat?.peer === code) endChat();
+  clearLastChat(code);
   await Promise.all([storage.deleteConversation(state.me.code, code), storage.deleteContact(state.me.code, code)]);
   state.viewing = null;
   await loadContacts();
@@ -294,6 +372,14 @@ async function copyCode() {
 
 // ---------- Chat request flow ----------
 // requester: chat-request ──► receiver: Accept/Decline ──► chat-response ──► WebRTC handshake
+// Contacts (people accepted before) skip the Accept step: see onChatRequest.
+// A request to someone offline waits on the server until they're back (onWaitingRequest).
+
+// Free to start or accept a chat: no chat, or only one waiting for a contact who is offline.
+function isIdle() {
+  const chat = state.chat;
+  return !chat || (chat.status === 'reconnecting' && !state.online.has(chat.peer));
+}
 
 function requestChat(code) {
   // They're already asking us: pressing Chat on them means yes.
@@ -301,17 +387,45 @@ function requestChat(code) {
     answerRequest(true);
     return;
   }
-  if (state.chat) return;
+  if (state.requests.has(code)) {
+    answerWaitingRequest(code, true);
+    return;
+  }
+  if (!isIdle()) return;
+  // A contact who is offline: connect as soon as they come online.
+  if (state.contacts.has(code) && !state.online.has(code)) {
+    startWaiting(code);
+    openConversation(code);
+    toast(`${nameOf(code)} is offline. You'll connect automatically when they come online.`);
+    return;
+  }
+  const old = state.chat;
   state.chat = {
     peer: code,
     status: 'requesting',
     timer: setTimeout(() => endChat(`${nameOf(code)} didn't respond.`), REQUEST_TIMEOUT_MS),
   };
+  if (old) {
+    retireChat(old);
+    old.connection?.close();
+  }
   sendToServer({ type: 'chat-request', to: code });
   openConversation(code);
 }
 
 function onChatRequest(from, data) {
+  // Right after signing in, contacts are still loading: without them, a contact's
+  // reconnect would look like a stranger's request. Handle it once they're loaded.
+  if (!state.contactsLoaded) {
+    setTimeout(() => {
+      if (state.me) onChatRequest(from, data);
+    }, 200);
+    return;
+  }
+  if (data?.waiting) {
+    onWaitingRequest(from, data);
+    return;
+  }
   const chat = state.chat;
   if (chat?.peer === from) {
     if (chat.status === 'requesting') {
@@ -326,17 +440,21 @@ function onChatRequest(from, data) {
     return;
   }
   if (data?.resume && state.incoming === from) return; // their earlier retry is already on screen
-  if (chat || state.incoming) {
+  if (!isIdle() || state.incoming) {
     sendToServer({ type: 'chat-response', to: from, data: { accepted: false, reason: 'busy' } });
     return;
   }
+  // A contact: accepted before, so connect without asking again. If we know their device
+  // key, the chat only opens once their device proves it's the same one (onPeerAuth).
+  if (state.contacts.has(from)) {
+    acceptChat(from, { resume: Boolean(data?.resume) });
+    if (!state.viewing) openConversation(from);
+    return;
+  }
   state.incoming = from;
-  const known = state.contacts.has(from);
   $('request-from').textContent = nameOf(from);
   $('request-code').textContent = formatCode(from);
-  $('request-note').textContent = known
-    ? "If you accept, your browsers connect directly and messages won't pass through the server."
-    : "Not in your contacts yet. Only accept if you recognise this code. Accepting adds them to your contacts.";
+  $('request-note').textContent = 'Not in your contacts yet. Only accept if you recognise this code. Accepting adds them to your contacts.';
   $('request-dialog').showModal();
   sounds.request();
   notify.show('Chat request', { body: `${nameOf(from)} wants to chat with you.`, tag: `request-${from}` });
@@ -395,12 +513,65 @@ function onPeerEnded(from) {
   if (state.chat?.peer === from) endChat(`${nameOf(from)} ended the chat.`, false);
 }
 
+// ---------- Requests to someone offline ----------
+// The server keeps the request (who, when: never messages) and delivers it when they're back.
+
+// My request went to someone offline: it waits for them on the server.
+function onRequestWaiting(code) {
+  if (state.chat?.peer === code && state.chat.status === 'requesting') endChat(null, false);
+  toast(`${nameOf(code)} is offline. They'll see your request next time they open CipherLink.`);
+}
+
+// A request that arrived while I was offline: listed under Requests until I answer.
+function onWaitingRequest(from, { time }) {
+  if (state.contacts.has(from)) {
+    // A contact tried to reach me: nothing to accept, and we'll connect when both are online.
+    sendToServer({ type: 'request-answer', to: from, data: { accepted: true } });
+    toast(`${nameOf(from)} tried to chat with you while you were away.`);
+    return;
+  }
+  state.requests.set(from, { time: Number(time) || Date.now() });
+  renderRequests();
+}
+
+function answerWaitingRequest(code, accepted) {
+  state.requests.delete(code);
+  sendToServer({ type: 'request-answer', to: code, data: { accepted } });
+  if (accepted) {
+    addContact(code);
+    toast(`${nameOf(code)} added. You'll connect automatically when you're both online.`);
+  }
+  renderRequests();
+}
+
+// The answer to a request of mine that waited. Accepted: they're a contact now, so wait
+// for them and connect as soon as both are online.
+async function onRequestAnswer(from, data) {
+  if (!data?.accepted) {
+    toast(`${nameOf(from)} declined your chat request.`);
+    return;
+  }
+  const known = state.contacts.has(from);
+  await addContact(from);
+  if (known) return;
+  toast(`${nameOf(from)} accepted your chat request.`);
+  notify.show(nameOf(from), { body: 'Accepted your chat request.', tag: `answer-${from}` });
+  if (isIdle()) {
+    startWaiting(from);
+    if (!state.viewing) openConversation(from);
+  }
+}
+
 // ---------- Peer-to-peer connection ----------
 
 // `resume` marks a reconnection of an existing chat: if it fails, keep retrying instead of ending.
 function startConnection(peer, initiator, { resume = false } = {}) {
   retireChat(state.chat);
-  const chat = { peer, status: 'connecting', resume, outgoing: [], sending: false, incomingFile: null };
+  // A contact whose device key we know must prove it's the same device before the chat opens.
+  const needsAuth = Boolean(state.contacts.get(peer)?.key);
+  // Rebuilding a link that dropped (as opposed to a first connection): only changes the wording.
+  const dropped = Boolean(state.chat?.peer === peer && state.chat.dropped);
+  const chat = { peer, status: 'connecting', resume, dropped, needsAuth, outgoing: [], sending: false, incomingFile: null };
   state.chat = chat;
   chat.timer = setTimeout(() => {
     if (resume) startReconnecting();
@@ -413,22 +584,15 @@ function startConnection(peer, initiator, { resume = false } = {}) {
     sendSignal: (data) => sendToServer({ type: 'signal', to: peer, data }),
     onOpen: () => {
       if (state.chat !== chat) return;
-      clearTimeout(chat.timer);
-      chat.status = 'connected';
-      toast(resume ? `Reconnected to ${nameOf(peer)}.` : `Connected directly to ${nameOf(peer)}.`);
-      pollConnectionInfo(chat);
-      chat.statsTimer = setInterval(() => pollConnectionInfo(chat), STATS_INTERVAL_MS);
-      renderAll();
-      if (state.viewing === peer) {
-        loadMessages();
-        $('message-input').focus();
-      }
+      chat.open = true;
+      sendAuth(chat);
+      if (!chat.needsAuth) markConnected(chat);
     },
     onMessage: (message) => {
       if (state.chat === chat) onPeerMessage(chat, message);
     },
     onBinary: (data) => {
-      if (state.chat === chat) onPeerBinary(chat, data);
+      if (state.chat === chat && (chat.verified || !chat.needsAuth)) onPeerBinary(chat, data);
     },
     onClose: () => {
       if (state.chat !== chat) return;
@@ -438,6 +602,52 @@ function startConnection(peer, initiator, { resume = false } = {}) {
     },
   });
   renderAll();
+}
+
+function markConnected(chat) {
+  clearTimeout(chat.timer);
+  chat.status = 'connected';
+  if (state.incoming === chat.peer) closeRequestDialog(); // their request is answered by this
+  setLastChat(chat.peer);
+  toast(chat.dropped ? `Reconnected to ${nameOf(chat.peer)}.` : `Connected directly to ${nameOf(chat.peer)}.`);
+  pollConnectionInfo(chat);
+  chat.statsTimer = setInterval(() => pollConnectionInfo(chat), STATS_INTERVAL_MS);
+  renderAll();
+  if (state.viewing === chat.peer) {
+    loadMessages();
+    if (!chat.resume) $('message-input').focus();
+  }
+}
+
+// ---------- Device check between contacts ----------
+// Each side signs both DTLS fingerprints of this connection with its device key. The
+// fingerprints are unique to this connection, so a signature can't be reused on another one,
+// and a man-in-the-middle (who must swap in its own certificates) can't produce a valid one.
+
+async function sendAuth(chat) {
+  const fingerprints = chat.connection.getFingerprints();
+  if (!fingerprints || !state.key) return;
+  const signature = await deviceKeys.sign(state.key.privateKey, `cipherlink-peer:${fingerprints}:${state.me.code}`);
+  if (state.chat === chat) chat.connection.send({ type: 'auth', key: state.key.jwk, signature });
+}
+
+// A known key must match. Without one (our first chat), their key is remembered for next time.
+async function onPeerAuth(chat, { key, signature }) {
+  if (chat.verified || !deviceKeys.isValidKey(key) || typeof signature !== 'string') return;
+  const known = state.contacts.get(chat.peer)?.key;
+  const fingerprints = chat.connection.getFingerprints();
+  const valid = Boolean(fingerprints) && (!known || deviceKeys.sameKey(known, key))
+    && await deviceKeys.verify(key, `cipherlink-peer:${fingerprints}:${chat.peer}`, signature);
+  if (state.chat !== chat) return;
+  if (!valid) {
+    if (chat.needsAuth) {
+      endChat(`Couldn't verify that this is ${nameOf(chat.peer)}'s device, so the chat was closed. If they cleared their browser data, remove them and add them again.`);
+    }
+    return;
+  }
+  chat.verified = true;
+  if (!known) saveContactKey(chat.peer, key);
+  if (chat.needsAuth && chat.open && chat.status !== 'connected') markConnected(chat);
 }
 
 // True while a new chat is still being set up (as opposed to connected or reconnecting).
@@ -450,20 +660,59 @@ function isStarting(chat) {
 function startReconnecting() {
   const old = state.chat;
   if (!old) return;
-  retireChat(old);
-  const chat = { peer: old.peer, status: 'reconnecting', outgoing: [], sending: false, incomingFile: null };
-  state.chat = chat;
-  old.connection?.close();
-  if (old.status === 'connected') toast(`Connection to ${nameOf(chat.peer)} lost. Reconnecting.`);
+  if (old.status === 'connected') toast(`Connection to ${nameOf(old.peer)} lost. Reconnecting.`);
   // A short pause first, so a "bye" or "end" that is still on its way can arrive.
-  chat.timer = setTimeout(() => requestResume(chat), 1000);
+  startWaiting(old.peer, { delay: 1000 });
+  state.chat.dropped = true;
+}
+
+// Waits for a contact and connects without a request popup as soon as both are online:
+// after a dropped link, when the app reopens (the last chat), or after a request is accepted.
+function startWaiting(peer, { delay = 0 } = {}) {
+  const old = state.chat;
+  const chat = { peer, status: 'reconnecting', outgoing: [], sending: false, incomingFile: null };
+  state.chat = chat;
+  if (old) {
+    retireChat(old);
+    old.connection?.close();
+  }
+  chat.timer = setTimeout(() => requestResume(chat), delay);
   chat.retry = setInterval(() => requestResume(chat), RESUME_INTERVAL_MS);
   renderAll();
 }
 
 function requestResume(chat) {
-  if (state.chat !== chat || chat.status !== 'reconnecting') return;
+  if (state.chat !== chat || chat.status !== 'reconnecting' || !state.online.has(chat.peer)) return;
   sendToServer({ type: 'chat-request', to: chat.peer, data: { resume: true } });
+}
+
+// The chat that was open when the tab closed, so reopening the app reconnects to it.
+function lastChatKey() {
+  return `cipherlink-last-chat:${state.me.code}`;
+}
+
+function getLastChat() {
+  try {
+    return localStorage.getItem(lastChatKey());
+  } catch {
+    return null;
+  }
+}
+
+function setLastChat(code) {
+  try {
+    localStorage.setItem(lastChatKey(), code);
+  } catch {
+    // Storage blocked: the app just won't reconnect by itself next time.
+  }
+}
+
+function clearLastChat(code) {
+  try {
+    if (getLastChat() === code) localStorage.removeItem(lastChatKey());
+  } catch {
+    // Nothing saved.
+  }
 }
 
 // Stops a chat's timers and drops its unfinished photo/video transfers, which can't
@@ -485,6 +734,7 @@ function endChat(reason = null, notifyPeer = true) {
   state.chat = null;
   retireChat(chat);
   clearReply();
+  clearLastChat(chat.peer);
   if (notifyPeer) {
     // "bye" goes over the direct link, so the other side ends the chat instead of
     // mistaking the close for a dropped connection. The server "end" is a backup.
@@ -530,6 +780,11 @@ async function sendMessage(text) {
 }
 
 function onPeerMessage(chat, message) {
+  if (message.type === 'auth') {
+    onPeerAuth(chat, message);
+    return;
+  }
+  if (chat.needsAuth && !chat.verified) return; // nothing counts until their device checks out
   if (message.type === 'message' && typeof message.text === 'string') {
     hidePeerTyping(chat);
     saveRecord({
@@ -665,15 +920,48 @@ async function saveRecord(record) {
 // "file-end". The channel is ordered, so chunks arrive in sequence. Files are sent one at a
 // time so chunks from two files never mix.
 
-function sendFiles(files) {
+// Each picked file is read into memory right away. Phones only let the page read a picked
+// file for a short time, so a file read later (after waiting in the queue, or after the
+// browser was paused) can fail with NotReadableError.
+async function sendFiles(files) {
   const chat = state.chat;
   if (chat?.status !== 'connected') return;
   for (const file of files) {
-    if (!IMAGE_TYPES.has(file.type) && !VIDEO_TYPES.has(file.type)) toast(`${file.name} isn't a supported photo or video.`);
-    else if (file.size > MAX_FILE_BYTES) toast(`${file.name} is over 100 MB.`);
-    else if (file.size > 0) chat.outgoing.push(file);
+    if (!IMAGE_TYPES.has(file.type) && !VIDEO_TYPES.has(file.type)) {
+      toast(`${file.name} isn't a supported photo or video.`);
+      continue;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      toast(`${file.name} is over 100 MB.`);
+      continue;
+    }
+    if (file.size === 0) continue;
+    const queued = chat.outgoing.reduce((total, item) => total + item.size, 0);
+    if (queued + file.size > MAX_QUEUED_BYTES) {
+      toast(`Too many files at once. Send ${file.name} after these finish.`);
+      continue;
+    }
+    const data = await readFile(file);
+    if (!data) {
+      toast(`Couldn't read ${file.name} from this device. If it's only in cloud storage (like Google Photos), download it first, then pick it again.`);
+      continue;
+    }
+    if (state.chat !== chat) return;
+    chat.outgoing.push({ name: file.name, type: file.type, size: data.byteLength, data });
+    if (!chat.sending) drainOutgoing(chat);
   }
-  if (!chat.sending) drainOutgoing(chat);
+}
+
+async function readFile(file) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await file.arrayBuffer();
+    } catch (error) {
+      console.error(`Reading ${file.name} failed:`, error);
+      await new Promise((resolve) => setTimeout(resolve, READ_RETRY_MS));
+    }
+  }
+  return null;
 }
 
 async function drainOutgoing(chat) {
@@ -700,12 +988,10 @@ async function sendFile(chat, file) {
     file: { name: file.name, mime: file.type, size: file.size },
     direction: 'Sending',
   });
-  let data;
+  // `file.data` is the copy read when it was picked. It's also what we keep afterwards
+  // (storing the picked File itself fails on some phones).
+  const { data } = file;
   try {
-    // Read the whole file once, before sending. Phones can fail to read a large gallery
-    // file slice by slice during a long transfer, and this in-memory copy is also what we
-    // keep afterwards (storing the picked File itself fails on some phones).
-    data = await file.arrayBuffer();
     if (!chat.connection.send({ type: 'file-start', id: transfer.id, ...transfer.file })) throw new Error('Channel closed');
     for (let offset = 0; offset < data.byteLength; offset += CHUNK_SIZE) {
       // Cancel (by either side) stops the loop at the next chunk.
@@ -882,14 +1168,33 @@ async function showSafetyNumber() {
   const number = await chat.connection.getSafetyNumber();
   $('safety-peer').textContent = nameOf(chat.peer);
   $('safety-number').textContent = number ?? 'Unavailable: safety numbers need HTTPS or localhost.';
+  // Their device key matched the one from your earlier chats (onPeerAuth).
+  $('safety-verified').hidden = !(chat.needsAuth && chat.verified);
   $('safety-dialog').showModal();
 }
 
 // ---------- Rendering ----------
 
 function renderAll() {
+  renderRequests();
   renderContacts();
   renderHeader();
+}
+
+// Requests that arrived while I was offline, newest first, each with Accept and Decline.
+function renderRequests() {
+  const requests = [...state.requests.entries()].sort((a, b) => b[1].time - a[1].time);
+  $('requests').hidden = requests.length === 0;
+  $('request-count').textContent = requests.length;
+  $('request-list').replaceChildren(...requests.map(([code, { time }]) => {
+    const item = contactItem(code, false, `Sent ${timeAgo(time)}`);
+    item.onclick = null;
+    item.append(
+      button('Accept', () => answerWaitingRequest(code, true), 'btn-chip'),
+      button('Decline', () => answerWaitingRequest(code, false), 'btn-chip'),
+    );
+    return item;
+  }));
 }
 
 function renderContacts() {
@@ -906,7 +1211,7 @@ function renderContacts() {
     const item = contactItem(contact.code, online, contactSubtitle(contact, online));
     if (online && state.chat?.peer !== contact.code) {
       const chat = button('Chat', () => requestChat(contact.code), 'btn-chip');
-      chat.disabled = Boolean(state.chat);
+      chat.disabled = !isIdle();
       item.append(chat);
     }
     list.append(item);
@@ -918,9 +1223,20 @@ function contactSubtitle(contact, online) {
   if (chat?.peer === contact.code) {
     if (chat.status === 'connected' && chat.peerTyping) return 'Typing…';
     if (chat.resume && chat.status === 'connecting') return 'Reconnecting';
+    if (chat.status === 'reconnecting' && !online) return 'Offline. Connects when back';
     return { requesting: 'Waiting for reply', connecting: 'Connecting', connected: 'In chat', reconnecting: 'Reconnecting' }[chat.status];
   }
   return contact.lastText ?? (online ? 'Online' : 'Offline');
+}
+
+function timeAgo(time) {
+  const minutes = Math.round((Date.now() - time) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 function renderHeader() {
@@ -962,7 +1278,7 @@ function renderHeader() {
     actions.append(button('Cancel', () => endChat(), 'btn-small btn-outline'));
   } else if (online) {
     const request = button('Request chat', () => requestChat(peer), 'btn-small btn-primary');
-    request.disabled = Boolean(state.chat);
+    request.disabled = !isIdle();
     actions.append(request);
   }
 
@@ -971,6 +1287,7 @@ function renderHeader() {
   $('send-btn').disabled = !canType;
   $('attach-btn').disabled = !canType;
   $('message-input').placeholder = canType ? 'Type a message'
+    : established && !online ? 'Connects when they come online'
     : established ? 'Reconnecting…'
     : 'Connect to send messages';
   renderLinkStrip();
@@ -981,7 +1298,10 @@ function renderStatusLine() {
   const peer = state.viewing;
   if (!peer) return;
   const chat = state.chat?.peer === peer ? state.chat : null;
-  const status = chat?.resume && chat.status === 'connecting' ? 'reconnecting' : chat?.status;
+  let status = chat?.resume && chat.status === 'connecting' ? 'reconnecting' : chat?.status;
+  // Waiting for an offline contact: no scanning bar, nothing is happening until they're back.
+  if (status === 'reconnecting' && !state.online.has(peer)) status = 'waiting';
+  if (status === 'connecting' && chat.open) status = 'verifying';
   const typing = status === 'connected' && Boolean(chat.peerTyping);
   $('conversation').dataset.status = status ?? '';
   $('conversation').classList.toggle('peer-typing', typing);
@@ -989,7 +1309,9 @@ function renderStatusLine() {
     connected: 'Connected directly',
     requesting: 'Waiting for them to accept',
     connecting: 'Connecting',
+    verifying: 'Checking their device',
     reconnecting: 'Reconnecting',
+    waiting: "Offline. Connects when they're back",
   }[status] ?? (state.online.has(peer) ? 'Online' : 'Offline. Saved history');
 }
 
@@ -1297,7 +1619,24 @@ async function showApp() {
   $('session').classList.remove('hidden');
   await loadContacts();
   sendWatch();
+  // The tab was closed mid-chat: reconnect to that contact as soon as they're online.
+  const last = getLastChat();
+  if (!state.chat && last && state.contacts.has(last)) {
+    startWaiting(last);
+    if (!state.viewing) openConversation(last);
+  }
   renderAll();
+}
+
+// Registers this browser for push notifications (chat requests) with the server, or
+// withdraws it when notifications are off or blocked.
+async function syncPush() {
+  if (!notify.isEnabled()) {
+    sendToServer({ type: 'push-unsubscribe' });
+    return;
+  }
+  const subscription = await notify.subscribePush(state.pushKey);
+  if (subscription) sendToServer({ type: 'push-subscribe', subscription });
 }
 
 function showLogin() {
@@ -1320,10 +1659,11 @@ function setServerStatus(online) {
 function leave() {
   if (state.incoming) answerRequest(false);
   endChat();
+  setSignedIn(false);
   const ws = state.ws;
   state.ws = null;
   ws?.close();
-  Object.assign(state, { me: null, contacts: new Map(), online: new Set(), names: new Map(), viewing: null, serverOnline: false });
+  Object.assign(state, { me: null, contacts: new Map(), contactsLoaded: false, requests: new Map(), online: new Set(), names: new Map(), viewing: null, serverOnline: false });
   showLogin();
 }
 
@@ -1417,6 +1757,13 @@ $('login-form').addEventListener('submit', (event) => {
   connect();
 });
 
+// Coming back (tab closed, phone restarted): sign straight in with the saved identity.
+// Sounds need a user gesture, so the first tap anywhere turns them on.
+if (loadIdentity() && isSignedIn()) {
+  document.addEventListener('pointerdown', () => sounds.unlock(), { once: true });
+  connect();
+}
+
 // Icon toggle buttons: aria-pressed picks which icon shows (see .icon-on / .icon-off in CSS).
 function setToggle(button, on, label) {
   button.setAttribute('aria-pressed', String(on));
@@ -1454,7 +1801,9 @@ document.addEventListener('fullscreenchange', renderFullscreenButton);
 // browser for permission, which needs this click.
 function renderNotifyButton() {
   const on = notify.isEnabled();
-  setToggle($('notify-btn'), on, on ? 'Notifications on' : 'Notifications off');
+  setToggle($('notify-btn'), on, on ? 'Notifications on'
+    : notify.isBlocked() ? 'Notifications blocked in browser settings'
+    : 'Notifications off');
 }
 $('notify-btn').hidden = !notify.isSupported();
 renderNotifyButton();
@@ -1462,12 +1811,14 @@ notify.init();
 $('notify-btn').onclick = async () => {
   if (notify.isEnabled()) {
     notify.disable();
+    notify.unsubscribePush();
   } else if (notify.isBlocked()) {
     toast('Notifications are blocked for this site. Allow them from the icon next to the address bar.');
   } else if (await notify.enable() === 'granted') {
-    toast("Notifications on. You'll get them while CipherLink is open in a background tab.");
+    toast("Notifications on. Chat requests reach you even when the app is in the background; messages while it's open.");
   }
   renderNotifyButton();
+  syncPush();
 };
 
 // Format as XXXX-XXXX while typing.
@@ -1482,7 +1833,7 @@ $('add-form').addEventListener('submit', (event) => {
   const code = normalizeCode($('add-code').value);
   const error = !isValidCode(code) ? 'Codes are 8 characters, like 7KQM-4XPD.'
     : code === state.me.code ? "That's your own code."
-    : state.chat ? 'Finish your current chat first.'
+    : !isIdle() ? 'Finish your current chat first.'
     : '';
   $('add-error').textContent = error;
   if (error) return;
@@ -1597,6 +1948,7 @@ $('message-menu').addEventListener('click', (event) => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   notify.clear(); // they're looking at the app now
+  renderNotifyButton(); // permission may have changed in the browser settings meanwhile
   if (!state.me) return;
   if (!state.ws) connect();
   else if (state.chat?.status === 'reconnecting') requestResume(state.chat);
@@ -1637,4 +1989,6 @@ $('back-btn').onclick = () => {
   state.viewing = null;
   renderAll();
 };
-window.addEventListener('pagehide', () => endChat());
+// Closing the tab doesn't end the chat (only End chat does): drop the link so the other side
+// notices at once and waits to reconnect, and reopening the app picks it up again.
+window.addEventListener('pagehide', () => state.chat?.connection?.close());

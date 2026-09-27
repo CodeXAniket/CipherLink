@@ -31,3 +31,6 @@ desktop.ini
 
 # Launch video output
 brag-output*/
+
+# Server data: device public keys, waiting requests, push keys (contains a private key)
+data/

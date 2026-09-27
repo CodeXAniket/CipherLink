@@ -389,6 +389,11 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 }
 .sidebar-note { margin: -6px 24px 12px; color: var(--mute); font-size: 13px; }
 
+/* Requests that arrived while offline: Accept / Decline chips on each row. */
+#requests { margin-bottom: 28px; }
+#request-list .contact { gap: 8px; padding-right: 16px; cursor: default; }
+#request-list .btn-chip { padding: 0 12px; }
+
 .list { list-style: none; margin: 0; padding: 0; }
 .list-empty { padding: 8px 24px; font-size: 14px; color: var(--mute); }
 
@@ -454,6 +459,7 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 /* Scanning bar while waiting for a reply, connecting or reconnecting. */
 .conversation[data-status="requesting"] .chat-header::after,
 .conversation[data-status="connecting"] .chat-header::after,
+.conversation[data-status="verifying"] .chat-header::after,
 .conversation[data-status="reconnecting"] .chat-header::after {
   content: "";
   position: absolute;
@@ -821,6 +827,10 @@ img.media { cursor: zoom-in; }
   word-spacing: 10px;
   text-align: center;
 }
+
+/* Shown when their device key matched earlier chats. */
+.safety-verified { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-weight: 600; font-size: 14px; }
+.safety-verified::before { content: ""; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--ink); }
 
 .toasts {
   position: fixed;

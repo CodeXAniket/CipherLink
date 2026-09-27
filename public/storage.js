@@ -1,10 +1,11 @@
-// Chat history and contacts, stored only in this browser using IndexedDB. Nothing goes
-// to the server. Every record has an `owner` (your friend code) so two identities
-// tested in the same browser keep separate data.
+// Chat history, contacts and this device's key, stored only in this browser using IndexedDB.
+// Nothing goes to the server. Every record has an `owner` (your friend code) so two
+// identities tested in the same browser keep separate data.
 const DB_NAME = 'cipherlink';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const MESSAGES = 'messages';
 const CONTACTS = 'contacts';
+const KEYS = 'keys';
 
 let dbPromise = null;
 
@@ -23,14 +24,26 @@ function openDB() {
         const contacts = db.createObjectStore(CONTACTS, { keyPath: ['owner', 'code'] });
         contacts.createIndex('owner', 'owner');
       }
+      // Version 3: this device's signing key, one per friend code.
+      if (!db.objectStoreNames.contains(KEYS)) db.createObjectStore(KEYS, { keyPath: 'owner' });
     };
     request.onsuccess = () => {
       const db = request.result;
-      // Another tab upgraded the database: let go so it isn't blocked.
-      db.onversionchange = () => db.close();
+      // Another tab upgraded the database, or the browser closed the connection (phones do
+      // this to pages they froze in the background): open a fresh one next time.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
       resolve(db);
     };
     request.onerror = () => reject(request.error);
+  }).catch((error) => {
+    dbPromise = null;
+    throw error;
   });
   return dbPromise;
 }
@@ -42,9 +55,16 @@ function promisify(request) {
   });
 }
 
-async function withStore(name, mode, run) {
-  const db = await openDB();
-  return promisify(run(db.transaction(name, mode).objectStore(name)));
+// Runs one request. If the connection turned out to be closed, reopen it and try once more.
+async function withStore(name, mode, run, retry = true) {
+  try {
+    const db = await openDB();
+    return await promisify(run(db.transaction(name, mode).objectStore(name)));
+  } catch (error) {
+    if (!retry || error?.name === 'QuotaExceededError') throw error;
+    dbPromise = null;
+    return withStore(name, mode, run, false);
+  }
 }
 
 // ---------- Messages ----------
@@ -77,19 +97,33 @@ export async function listConversations(owner) {
   return [...latest.values()].map((message) => ({ peer: message.peer, last: message, time: message.time }));
 }
 
-export async function deleteConversation(owner, peer) {
-  const db = await openDB();
-  const tx = db.transaction(MESSAGES, 'readwrite');
-  const store = tx.objectStore(MESSAGES);
-  const keys = await promisify(store.index('conversation').getAllKeys([owner, peer]));
-  for (const key of keys) store.delete(key);
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+// Deletes every message with one person in a single transaction.
+export async function deleteConversation(owner, peer, retry = true) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(MESSAGES, 'readwrite');
+    const request = tx.objectStore(MESSAGES).index('conversation').openCursor([owner, peer]);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } catch (error) {
+    if (!retry) throw error;
+    dbPromise = null;
+    return deleteConversation(owner, peer, false);
+  }
 }
 
 // ---------- Contacts ----------
+// { owner, code, name, addedAt, key? }: `key` is their device's public key, remembered
+// from the first chat, so later chats can check it's still the same device.
 
 export function saveContact(contact) {
   return withStore(CONTACTS, 'readwrite', (store) => store.put(contact));
@@ -101,4 +135,16 @@ export function listContacts(owner) {
 
 export function deleteContact(owner, code) {
   return withStore(CONTACTS, 'readwrite', (store) => store.delete([owner, code]));
+}
+
+// ---------- Device key ----------
+// { owner, privateKey, jwk }. The private key is a non-extractable CryptoKey: IndexedDB can
+// hold it, but no script can read its bytes.
+
+export function getDeviceKey(owner) {
+  return withStore(KEYS, 'readonly', (store) => store.get(owner));
+}
+
+export function saveDeviceKey(key) {
+  return withStore(KEYS, 'readwrite', (store) => store.put(key));
 }

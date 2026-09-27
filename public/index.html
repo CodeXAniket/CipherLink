@@ -142,6 +142,12 @@
           <p id="add-error" class="error" role="alert"></p>
         </form>
 
+        <section id="requests" hidden>
+          <h2>Requests <span id="request-count" class="count">0</span></h2>
+          <p class="sidebar-note">Sent while you were offline</p>
+          <ul id="request-list" class="list"></ul>
+        </section>
+
         <h2>Contacts <span id="contact-count" class="count">0</span></h2>
         <p class="sidebar-note">Stored on this device only</p>
         <ul id="contact-list" class="list"></ul>
@@ -226,6 +232,7 @@
   <dialog id="safety-dialog" class="dialog">
     <h3>Safety number</h3>
     <p id="safety-number" class="safety-number"></p>
+    <p id="safety-verified" class="safety-verified" hidden>Same device as your earlier chats. Checked automatically with their device key.</p>
     <p class="muted small">
       Compare this with <strong id="safety-peer"></strong> on a call or in person. If both screens show the same
       number, nobody is intercepting your chat. A new number is created for every chat session.

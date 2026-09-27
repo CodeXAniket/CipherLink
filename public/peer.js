@@ -122,15 +122,21 @@ export function createPeer({ initiator, iceServers, sendSignal, onOpen, onMessag
     });
   }
 
-  // Safety number: a hash of both peers' DTLS certificate fingerprints (from the SDP).
-  // A man-in-the-middle has to substitute its own certificates, so each user would
-  // see a different number. Sorting makes both sides compute the same input.
-  async function getSafetyNumber() {
+  // Both peers' DTLS certificate fingerprints (from the SDP), sorted so both sides get the
+  // same string. They identify this one connection: a man-in-the-middle has to substitute
+  // its own certificates, which changes them.
+  function getFingerprints() {
     const mine = extractFingerprint(pc.localDescription?.sdp);
     const theirs = extractFingerprint(pc.remoteDescription?.sdp);
-    if (!mine || !theirs || !crypto.subtle) return null;
+    return mine && theirs ? [mine, theirs].sort().join('|') : null;
+  }
 
-    const input = new TextEncoder().encode([mine, theirs].sort().join('|'));
+  // Safety number: a hash of the fingerprints, for people to compare by eye.
+  async function getSafetyNumber() {
+    const fingerprints = getFingerprints();
+    if (!fingerprints || !crypto.subtle) return null;
+
+    const input = new TextEncoder().encode(fingerprints);
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', input));
     const groups = [];
     for (let i = 0; i < 18; i += 3) {
@@ -174,7 +180,7 @@ export function createPeer({ initiator, iceServers, sendSignal, onOpen, onMessag
     onClose();
   }
 
-  return { handleSignal, send, sendBinary, getSafetyNumber, getConnectionInfo, close };
+  return { handleSignal, send, sendBinary, getFingerprints, getSafetyNumber, getConnectionInfo, close };
 }
 
 function extractFingerprint(sdp) {
