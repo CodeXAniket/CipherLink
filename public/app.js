@@ -1,6 +1,7 @@
 // App logic: your identity (friend code + display name), the signaling server connection,
 // contacts, the chat-request flow, and the UI. WebRTC lives in peer.js, storage in storage.js.
 import { createPeer } from './peer.js';
+import * as notify from './notify.js';
 import * as sounds from './sounds.js';
 import * as storage from './storage.js';
 
@@ -338,6 +339,7 @@ function onChatRequest(from, data) {
     : "Not in your contacts yet. Only accept if you recognise this code. Accepting adds them to your contacts.";
   $('request-dialog').showModal();
   sounds.request();
+  notify.show('Chat request', { body: `${nameOf(from)} wants to chat with you.`, tag: `request-${from}` });
   // The requester gives up after the same timeout, so don't leave a stale popup open.
   state.incomingTimer = setTimeout(() => {
     if (state.incoming === from) closeRequestDialog();
@@ -369,6 +371,7 @@ function acceptChat(from, { resume = false } = {}) {
 
 function closeRequestDialog() {
   clearTimeout(state.incomingTimer);
+  if (state.incoming) notify.clear(`request-${state.incoming}`); // answered or expired
   state.incoming = null;
   $('request-dialog').close();
 }
@@ -643,6 +646,10 @@ async function saveRecord(record) {
     if (record.file) sounds.sent(); // text plays its sound the moment it's sent
   } else {
     sounds.received();
+    notify.show(nameOf(record.peer), {
+      body: record.file ? `Sent you a ${mediaKind(record.file.mime).toLowerCase()}` : record.text.slice(0, PREVIEW_LENGTH),
+      tag: `chat-${record.peer}`,
+    });
   }
   const pending = transferBubble(record.id);
   if (pending) fillBubble(pending, record); // the progress bubble becomes the photo/video
@@ -1443,6 +1450,26 @@ $('fullscreen-btn').onclick = () => {
 };
 document.addEventListener('fullscreenchange', renderFullscreenButton);
 
+// System notifications while the app is in the background. Turning them on asks the
+// browser for permission, which needs this click.
+function renderNotifyButton() {
+  const on = notify.isEnabled();
+  setToggle($('notify-btn'), on, on ? 'Notifications on' : 'Notifications off');
+}
+$('notify-btn').hidden = !notify.isSupported();
+renderNotifyButton();
+notify.init();
+$('notify-btn').onclick = async () => {
+  if (notify.isEnabled()) {
+    notify.disable();
+  } else if (notify.isBlocked()) {
+    toast('Notifications are blocked for this site. Allow them from the icon next to the address bar.');
+  } else if (await notify.enable() === 'granted') {
+    toast("Notifications on. You'll get them while CipherLink is open in a background tab.");
+  }
+  renderNotifyButton();
+};
+
 // Format as XXXX-XXXX while typing.
 $('add-code').addEventListener('input', (event) => {
   const code = normalizeCode(event.target.value).slice(0, CODE_LENGTH);
@@ -1568,7 +1595,9 @@ $('message-menu').addEventListener('click', (event) => {
 // Phones pause pages in the background. When the app comes back to the front, reconnect
 // right away instead of waiting for the next retry.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !state.me) return;
+  if (document.visibilityState !== 'visible') return;
+  notify.clear(); // they're looking at the app now
+  if (!state.me) return;
   if (!state.ws) connect();
   else if (state.chat?.status === 'reconnecting') requestResume(state.chat);
 });

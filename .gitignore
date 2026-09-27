@@ -28,3 +28,6 @@ DESIGN.md
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Launch video output
+brag-output*/

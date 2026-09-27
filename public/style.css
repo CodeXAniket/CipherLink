@@ -222,7 +222,7 @@ input:disabled { color: var(--stone); cursor: not-allowed; }
 .icon-fill { fill: currentColor; }
 .btn-icon-small[aria-pressed="true"] .icon-off,
 .btn-icon-small[aria-pressed="false"] .icon-on { display: none; }
-#sound-btn[aria-pressed="false"] { color: var(--mute); }
+#sound-btn[aria-pressed="false"], #notify-btn[aria-pressed="false"] { color: var(--mute); }
 
 /* Filled = connected to the signaling server, hollow = reconnecting. */
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); border: 1.5px solid var(--ink); transition: background-color 0.3s; }
@@ -847,7 +847,9 @@ img.media { cursor: zoom-in; }
 
 @media (max-width: 720px) {
   .session-name { display: none; }
-  .session { gap: 8px; }
+  .session { gap: 6px; }
+  .navbar .btn-icon-small { width: 36px; height: 36px; }
+  #leave-btn { padding: 0 14px; }
   .wordmark { font-size: 20px; }
   .brand { gap: 10px; }
   /* Chat header on phones: back, avatar, name and End chat on the first row;
@@ -882,6 +884,9 @@ img.media { cursor: zoom-in; }
 }
 
 @media (max-width: 599px) {
+  .navbar { padding: 0 12px; gap: 12px; }
+  .brand { gap: 8px; }
+  .wordmark { font-size: 18px; }
   .steps { grid-template-columns: 1fr; }
   .login { padding-top: 0; }
   .login .page-width { padding: 0; }

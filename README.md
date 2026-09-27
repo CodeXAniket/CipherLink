@@ -33,6 +33,8 @@ Both people need to be online at the same time: there is no server to hold messa
 - **Safety number** to verify that nobody is intercepting the chat (MITM detection)
 - Chat history stored locally in IndexedDB, with export to JSON
 - Notification sounds synthesized with the Web Audio API (no audio files), with an on/off toggle
+- **System notifications** (bell button) for chat requests and new messages while the app is in a
+  background tab, shown by the page itself through a service worker. No push server is involved
 - Responsive design for desktop and mobile
 
 ## How it works
@@ -62,8 +64,8 @@ client about those codes. There is no global list of who is online.
 
 ### Photos and videos
 A file is sent as a JSON `file-start` (name, type, size), then 16 KB binary chunks, then `file-end`.
-The sender pauses whenever more than 1 MB is queued in the channel (**backpressure**) and resumes when
-it drains, so large videos never pile up in memory. Only formats that render inside `<img>` or
+The sender pauses whenever more than 256 KB is queued in the channel (**backpressure**) and resumes
+once it drains below 64 KB, so the send queue stays small even on phones. Only formats that render inside `<img>` or
 `<video>` are accepted (no SVG), and media is never opened as a page.
 
 ### Safety number (MITM detection)
@@ -115,6 +117,8 @@ public/app.js      App logic: identity, contacts, chat-request flow, file transf
 public/peer.js     WebRTC connection, DataChannel, backpressure, stats and safety number
 public/storage.js  IndexedDB: messages, media and contacts
 public/sounds.js   Notification sounds (Web Audio API)
+public/notify.js   System notifications while the app is in the background
+public/sw.js       Service worker: shows notifications, focuses the tab when one is clicked
 ```
 
 ## Design decisions and limitations
@@ -127,6 +131,9 @@ public/sounds.js   Notification sounds (Web Audio API)
   safety number would reveal this; binding codes to a device key pair is the proper fix.
 - **Strict networks** (some mobile and corporate networks) need a TURN relay. The server supports one
   through the `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL` environment variables.
+- **Notifications need the tab to be open.** They're shown by the page, not pushed from a server, so
+  nothing arrives once the tab is closed or the phone suspends the browser. iPhones only allow web
+  notifications for sites added to the home screen.
 - **Clearing browser data deletes your code, contacts and history.** Use Export to keep a copy of chats.
 
 ## Future improvements
