@@ -46,18 +46,12 @@ Messages need both people online at the same time: there is no server to hold th
 
 ## How it works
 
-```
-   Your browser                                     Friend's browser
- ┌─────────────────┐   direct, encrypted (DTLS)   ┌─────────────────┐
- │ UI + IndexedDB  │◄════════════════════════════►│ UI + IndexedDB  │
- └────────┬────────┘   text, photos, videos        └────────┬────────┘
-          │  WebSocket: presence of known codes,            │
-          │  chat requests, WebRTC handshake                │
-          ▼                                                 ▼
-        ┌───────────────────────────────────────────────────────┐
-        │   Signaling server (Node.js) — never sees messages     │
-        └───────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+    <img alt="CipherLink architecture: two browsers connect directly over an encrypted WebRTC DataChannel for messages, photos and videos, while a Node.js signaling server only relays presence and the WebRTC handshake and never sees messages." src="assets/architecture-light.svg" width="760">
+  </picture>
+</p>
 
 1. Each browser creates a random friend code and a device key, and joins the signaling server by
    signing a one-time nonce.
